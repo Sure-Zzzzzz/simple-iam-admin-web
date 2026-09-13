@@ -33,11 +33,13 @@ const permissionManifest = {
   createdAt: '2026-08-31T08:00:00Z',
   updatedAt: '2026-08-31T08:00:00Z'
 };
+const portalLoginLanding = { applicationCode: null, version: 1 };
 
 test('生产构建中可信应用目录提供管理能力', async ({ page }) => {
   await page.route('**/iam/web/auth/me', route => route.fulfill({ json: user }));
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
   await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: applicationPage }));
+  await page.route('**/iam/admin/portal/login-landing', route => route.fulfill({ json: portalLoginLanding }));
   await page.route('**/iam/admin/trusted-applications/1/permission-manifest', route => route.fulfill({ json: permissionManifest }));
   await page.route('**/iam/admin/trusted-applications/1', route => route.fulfill({ json: applicationDetail }));
 
@@ -81,39 +83,55 @@ test('新建可信应用后一次性展示服务端生成的初始客户端密�
   await expect(page.getByText('可信应用已创建：workflow，初始客户端密钥见抽屉内提示')).toBeVisible();
 });
 
-test('详情抽屉门户菜单编辑器随门户开关启用并整表保存', async ({ page }) => {
-  let savedPayload: { portal?: { enabled?: boolean; menus?: unknown } } | null = null;
+test('详情抽屉门户菜单树编辑器随门户开关启用并整树保存', async ({ page }) => {
+  let savedPayload: { enabled?: boolean; menuTree?: unknown; menus?: unknown } | null = null;
   await page.route('**/iam/web/auth/me', route => route.fulfill({ json: user }));
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
   await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: applicationPage }));
+  await page.route('**/iam/admin/portal/login-landing', route => route.fulfill({ json: portalLoginLanding }));
   await page.route('**/iam/admin/trusted-applications/1/resource-verification-clients', route => route.fulfill({ json: [] }));
   await page.route('**/iam/admin/trusted-applications/1/permission-manifest', route => route.fulfill({ json: permissionManifest }));
   await page.route('**/iam/admin/trusted-applications/1', async route => {
-    if (route.request().method() === 'PUT') {
-      savedPayload = route.request().postDataJSON();
-    }
     await route.fulfill({ json: applicationDetail });
+  });
+  await page.route('**/iam/admin/trusted-applications/1/portal/configuration', async route => {
+    savedPayload = route.request().postDataJSON();
+    await route.fulfill({ json: { ...applicationDetail.portal, configVersion: 1 } });
   });
 
   await page.goto('/app/iam/trusted-applications');
   await page.getByRole('button', { name: '示例应用' }).click();
   await expect(page.getByLabel('示例应用').getByText('门户路由前缀：/app/demo')).toBeVisible();
 
-  await expect(page.getByRole('button', { name: '添加菜单' })).toBeDisabled();
-  await page.locator('label.checkbox-field input').check();
-  await expect(page.getByRole('button', { name: '添加菜单' })).toBeEnabled();
+  await page.setViewportSize({ width: 1280, height: 960 });
+  await expect(page.getByRole('button', { name: '新增根级页面' })).toBeDisabled();
+  await page.getByRole('checkbox', { name: '在统一应用门户中可见' }).check();
+  await expect(page.getByRole('button', { name: '新增根级分组' })).toBeEnabled();
   await page.getByPlaceholder('如 /app/iam/ 或完整 URL').fill('/app/demo/');
   await page.getByPlaceholder('如 /iam/').fill('/demo/');
 
-  await page.getByRole('button', { name: '添加菜单' }).click();
-  await page.getByPlaceholder('如 workspace').fill('workspace');
-  await page.getByPlaceholder('如 工作台').fill('工作台');
-  await page.getByPlaceholder('如 /organizations').fill('/workspace');
+  await page.getByRole('button', { name: '新增根级分组' }).click();
+  await expect(page.locator('.entity-drawer-extra-wide')).toHaveCSS('width', '980px');
+  await expect.poll(() => page.locator('.menu-editor-workbench').evaluate((workbench) => getComputedStyle(workbench).gridTemplateColumns.split(' ').length)).toBe(2);
+  await expect.poll(() => page.locator('.menu-tree-navigator').evaluate((navigator) => navigator.getBoundingClientRect().width >= 280)).toBe(true);
+  const group = page.locator('.menu-node-editor');
+  await group.getByPlaceholder('如 workspace').fill('workspace');
+  await group.getByPlaceholder('如 工作台').fill('工作台');
+  await group.getByRole('button', { name: '在当前分组下新增页面' }).click();
+  const childPage = page.locator('.menu-node-editor');
+  await childPage.getByPlaceholder('如 workspace').fill('workspace-home');
+  await childPage.getByPlaceholder('如 工作台').fill('首页');
+  await childPage.getByPlaceholder('如 /organizations').fill('/home');
+  await childPage.getByRole('radio', { name: '用户与组织' }).click();
   await page.getByRole('button', { name: '保存应用资料' }).click();
 
   await expect(page.getByText('应用资料已更新')).toBeVisible();
-  expect(savedPayload.portal.enabled).toBe(true);
-  expect(savedPayload.portal.menus).toEqual([{ code: 'workspace', name: '工作台', route: '/workspace', sortOrder: 1 }]);
+  expect(savedPayload?.enabled).toBe(true);
+  expect(savedPayload?.menus).toBeUndefined();
+  expect(savedPayload?.menuTree).toEqual([{
+    code: 'workspace', name: '工作台', nodeType: 'GROUP', icon: null, route: null, requiredPagePermission: null, presentationMode: null, sortOrder: 1,
+    children: [{ code: 'workspace-home', name: '首页', nodeType: 'PAGE', icon: 'users', route: '/home', requiredPagePermission: null, presentationMode: 'STANDARD', sortOrder: 1, children: [] }]
+  }]);
 });
 
 test('详情抽屉权限清单申报应整表提交并展示新版本', async ({ page }) => {
@@ -121,6 +139,7 @@ test('详情抽屉权限清单申报应整表提交并展示新版本', async ({
   await page.route('**/iam/web/auth/me', route => route.fulfill({ json: user }));
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
   await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: applicationPage }));
+  await page.route('**/iam/admin/portal/login-landing', route => route.fulfill({ json: portalLoginLanding }));
   await page.route('**/iam/admin/trusted-applications/1/resource-verification-clients', route => route.fulfill({ json: [] }));
   await page.route('**/iam/admin/trusted-applications/1', route => route.fulfill({ json: applicationDetail }));
   await page.route('**/iam/admin/trusted-applications/1/permission-manifest', async route => {

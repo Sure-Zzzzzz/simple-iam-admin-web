@@ -300,24 +300,66 @@ export interface PortalMenuItem {
   sortOrder: number;
 }
 
+export type PortalMenuNodeType = 'GROUP' | 'PAGE';
+
+export type PortalPresentationMode = 'STANDARD' | 'IMMERSIVE';
+
+export interface PortalMenuTreeNode {
+  code: string;
+  name: string;
+  nodeType: PortalMenuNodeType;
+  icon: string | null;
+  route: string | null;
+  requiredPagePermission: string | null;
+  presentationMode: PortalPresentationMode | null;
+  sortOrder: number;
+  children: PortalMenuTreeNode[];
+}
+
 export interface PortalIntegration {
   enabled: boolean;
   routePrefix: string;
   entry: string | null;
   apiBase: string | null;
-  menus: PortalMenuItem[];
+  /** 1.0 compatibility projection. */
+  menus?: PortalMenuItem[];
+  /** 1.1 recursive menu configuration. */
+  menuTree?: PortalMenuTreeNode[];
+  defaultEntry: PortalDefaultEntry | null;
+  configVersion: number;
+}
+
+export interface PortalDefaultEntry {
+  pageMenuCode: string;
+  path: string;
 }
 
 export interface PortalIntegrationPayload {
   enabled: boolean;
   entry?: string;
   apiBase?: string;
-  menus: Array<{
+  /** @deprecated Send menuTree from the 1.1 administration console. */
+  menus?: Array<{
     code: string;
     name: string;
     route: string;
     sortOrder: number;
   }>;
+  menuTree?: PortalMenuTreeNode[];
+}
+
+export interface PortalConfigurationPayload {
+  enabled: boolean;
+  entry?: string;
+  apiBase?: string;
+  menuTree: PortalMenuTreeNode[];
+  defaultEntry: { pageMenuCode: string; entryPath?: string } | null;
+  configVersion: number;
+}
+
+export interface PortalLoginLanding {
+  applicationCode: string | null;
+  version: number;
 }
 
 export interface TrustedApplication {
@@ -919,6 +961,29 @@ export async function createTrustedApplication(payload: CreateTrustedApplication
 
 export async function updateTrustedApplication(applicationId: number, payload: UpdateTrustedApplicationPayload): Promise<TrustedApplication> {
   return request(`/iam/admin/trusted-applications/${applicationId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function updateTrustedApplicationPortalConfiguration(
+  applicationId: number,
+  payload: PortalConfigurationPayload
+): Promise<PortalIntegration> {
+  return request(`/iam/admin/trusted-applications/${applicationId}/portal/configuration`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function fetchPortalLoginLanding(): Promise<PortalLoginLanding> {
+  return request('/iam/admin/portal/login-landing');
+}
+
+export async function updatePortalLoginLanding(
+  payload: { applicationCode: string | null; version: number }
+): Promise<PortalLoginLanding> {
+  return request('/iam/admin/portal/login-landing', {
     method: 'PUT',
     body: JSON.stringify(payload)
   });

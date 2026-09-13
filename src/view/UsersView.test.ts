@@ -66,11 +66,15 @@ function createRequestMock(handlers: Record<string, unknown>) {
   });
 }
 
-async function mountView(request: ReturnType<typeof createRequestMock>, query: Record<string, string> = {}) {
+async function mountView(
+  request: ReturnType<typeof createRequestMock>,
+  query: Record<string, string> = {},
+  currentUser = adminUser
+) {
   applyAdminBridge({
-    currentUser: adminUser,
+    currentUser,
     request: createRuntimeRequest(request),
-    refreshCurrentUser: async () => adminUser,
+    refreshCurrentUser: async () => currentUser,
     refreshUnreadCount: async () => undefined,
     onUnauthorized: () => undefined
   });
@@ -112,6 +116,36 @@ describe('UsersView', () => {
     applyAdminBridge();
     document.body.innerHTML = '';
     vi.restoreAllMocks();
+  });
+
+  it('仅有用户权限时应保留用户列表并跳过无权的附属目录请求', async () => {
+    const operator = {
+      userId: 9,
+      username: 'user-operator',
+      displayName: '用户操作员',
+      admin: false,
+      authorities: ['iam:user:page', 'iam:user:api']
+    };
+    const request = createRequestMock({
+      'GET /iam/admin/users?page=1&size=10': usersPage,
+      'GET /iam/admin/users/2/roles': [roles[1]]
+    });
+
+    const wrapper = await mountView(request, {}, operator);
+
+    expect(wrapper.text()).toContain('爱丽丝');
+    expect(wrapper.text()).toContain('当前账号只具备部分用户管理范围');
+    expect(wrapper.text()).not.toContain('权限不足');
+    expect(request).not.toHaveBeenCalledWith('/iam/admin/roles');
+    expect(request).not.toHaveBeenCalledWith('/iam/admin/departments');
+    expect(request).not.toHaveBeenCalledWith('/iam/admin/trusted-applications/page?page=1&size=100');
+
+    await wrapper.get('tbody button').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('business_op ×');
+    expect(wrapper.text()).not.toContain('可分配角色');
+    expect(wrapper.text()).not.toContain('已授权应用');
   });
 
   it('创建用户应携带所选部门并展示 LDAP 身份来源', async () => {

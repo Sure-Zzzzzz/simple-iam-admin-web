@@ -13,7 +13,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="iam-admin-app">
+  <section class="iam-admin-app" :class="{ 'iam-admin-app--embedded': !standalone }">
     <header v-if="standalone" class="iam-admin-header">
       <div>
         <span>身份与访问控制</span>

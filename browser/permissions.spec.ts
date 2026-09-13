@@ -38,6 +38,26 @@ test('委派用户：导航只留有权模块，有权页正常展示数据', as
   await expect(page.locator('.iam-module-nav')).not.toContainText('仪表盘');
 });
 
+test('最小用户管理权限：不请求无权目录，用户列表仍可用', async ({ page }) => {
+  const forbiddenCatalogRequests: string[] = [];
+  await page.route('**/iam/web/auth/me', route => route.fulfill({ json: delegateUser }));
+  await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
+  await page.route('**/iam/web/auth/providers', route => route.fulfill({ json: { providers: [] } }));
+  await page.route('**/iam/admin/users?**', route => route.fulfill({ json: usersPage }));
+  for (const pattern of ['**/iam/admin/roles', '**/iam/admin/departments', '**/iam/admin/trusted-applications/page?**']) {
+    await page.route(pattern, route => {
+      forbiddenCatalogRequests.push(route.request().url());
+      return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ message: '权限不足' }) });
+    });
+  }
+
+  await page.goto('/app/iam/users');
+
+  await expect(page.getByRole('cell', { name: 'alice' })).toBeVisible();
+  await expect(page.getByText('当前账号只具备部分用户管理范围')).toBeVisible();
+  expect(forbiddenCatalogRequests).toEqual([]);
+});
+
 test('委派用户：直敲无权 URL 被 403 视图拦截', async ({ page }) => {
   await mockDelegateSession(page);
 

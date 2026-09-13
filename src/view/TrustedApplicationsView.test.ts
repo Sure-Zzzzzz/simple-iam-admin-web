@@ -40,6 +40,8 @@ const portalApplicationDetail = {
     routePrefix: '/app/demo',
     entry: '/app/demo/',
     apiBase: '/demo/',
+    defaultEntry: null,
+    configVersion: 2,
     menus: [{ code: 'workspace', name: '工作台', route: '/workspace', sortOrder: 1 }]
   }
 };
@@ -98,6 +100,9 @@ function installBridge(request: ReturnType<typeof vi.fn>) {
 
 function createRequestMock() {
   return vi.fn((url: string, init?: { method?: string; body?: string }) => {
+    if (url === '/iam/admin/portal/login-landing') {
+      return Promise.resolve({ applicationCode: null, version: 3 });
+    }
     if (url === '/iam/admin/trusted-applications' && init?.method === 'POST') {
       return Promise.resolve({ application: { id: 2, applicationCode: 'workflow' }, initialClientSecret: 'app-once-secret' });
     }
@@ -455,7 +460,7 @@ describe('TrustedApplicationsView', () => {
     expect(wrapper.get('.secret-reveal').text()).toContain('once-9f-secret');
   });
 
-  it('门户菜单编辑器应支持增删行并整表提交', async () => {
+  it('门户菜单编辑器应将旧平铺菜单迁为 PAGE，并以 menuTree 整树提交', async () => {
     const request = vi.fn((url: string) => {
       if (url === '/iam/admin/trusted-applications/1') {
         return Promise.resolve(portalApplicationDetail);
@@ -475,32 +480,99 @@ describe('TrustedApplicationsView', () => {
     await wrapper.get('.table-primary-action').trigger('click');
     await flushPromises();
 
-    const existingRows = wrapper.findAll('.menu-editor-row');
-    expect(existingRows).toHaveLength(1);
-    expect((existingRows[0].findAll('input')[1].element as HTMLInputElement).value).toBe('工作台');
+    const existingNodes = wrapper.findAll('.menu-tree-node');
+    expect(existingNodes).toHaveLength(1);
+    expect(existingNodes[0].attributes('aria-current')).toBe('true');
+    expect((wrapper.get('.menu-node-editor select').element as HTMLSelectElement).value).toBe('PAGE');
+    expect((wrapper.get('.menu-node-editor').findAll('input')[1].element as HTMLInputElement).value).toBe('工作台');
 
-    await clickButton(wrapper, '添加菜单');
-    const newInputs = wrapper.findAll('.menu-editor-row')[1].findAll('input');
+    await clickButton(wrapper, '新增根级页面');
+    const newInputs = wrapper.get('.menu-node-editor').findAll('input');
     await newInputs[0].setValue('billing');
     await newInputs[1].setValue('账单中心');
     await newInputs[2].setValue('/billing');
-    await newInputs[3].setValue('2');
+    await wrapper.get('[aria-label="用户与组织"]').trigger('click');
 
-    await clickButton(wrapper, '移除菜单');
+    await wrapper.findAll('.menu-tree-node')[0].trigger('click');
+    await wrapper.get('[aria-label="移除当前节点"]').trigger('click');
 
     await wrapper.get('form.drawer-form').trigger('submit');
     await flushPromises();
 
     const calls = request.mock.calls as unknown as Array<[string, { method?: string; body?: string } | undefined]>;
     const updateCall = calls.find(([url, init]) =>
-      url === '/iam/admin/trusted-applications/1' && init?.method === 'PUT');
+      url === '/iam/admin/trusted-applications/1/portal/configuration' && init?.method === 'PUT');
     expect(updateCall).toBeTruthy();
     const payload = JSON.parse(updateCall![1]!.body!);
-    expect(payload.portal.enabled).toBe(true);
-    expect(payload.portal.menus).toEqual([{ code: 'billing', name: '账单中心', route: '/billing', sortOrder: 2 }]);
+    expect(payload.enabled).toBe(true);
+    expect(payload.defaultEntry).toBeNull();
+    expect(payload.configVersion).toBe(2);
+    expect(payload.menuTree).toEqual([{
+      code: 'billing', name: '账单中心', nodeType: 'PAGE', icon: 'users', route: '/billing', requiredPagePermission: null, presentationMode: 'STANDARD', sortOrder: 1, children: []
+    }]);
   });
 
-  it('门户菜单存在部分填写的行时应阻断提交', async () => {
+  it('页面菜单选择沉浸展示时应完整提交展示模式', async () => {
+    const request = vi.fn((url: string) => {
+      if (url === '/iam/admin/trusted-applications/1') return Promise.resolve(portalApplicationDetail);
+      if (url === '/iam/admin/trusted-applications/1/resource-verification-clients') return Promise.resolve([]);
+      if (url.endsWith('/permission-manifest')) return Promise.resolve(permissionManifest);
+      return Promise.resolve(pageBody);
+    });
+    installBridge(request);
+
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('.table-primary-action').trigger('click');
+    await flushPromises();
+    await wrapper.get('select[aria-label="门户展示"]').setValue('IMMERSIVE');
+    await wrapper.get('form.drawer-form').trigger('submit');
+    await flushPromises();
+
+    const calls = request.mock.calls as unknown as Array<[string, { method?: string; body?: string } | undefined]>;
+    const updateCall = calls.find(([url, init]) =>
+      url === '/iam/admin/trusted-applications/1/portal/configuration' && init?.method === 'PUT');
+    expect(updateCall).toBeTruthy();
+    expect(JSON.parse(updateCall![1]!.body!).menuTree[0].presentationMode).toBe('IMMERSIVE');
+  });
+
+  it('默认页面、静态子路径和无深链登录首页应按独立乐观锁契约提交', async () => {
+    const request = vi.fn((url: string, init?: { method?: string }) => {
+      if (url === '/iam/admin/trusted-applications/1') return Promise.resolve(portalApplicationDetail);
+      if (url === '/iam/admin/portal/login-landing') {
+        return init?.method === 'PUT'
+          ? Promise.resolve({ applicationCode: 'demo', version: 6 })
+          : Promise.resolve({ applicationCode: null, version: 5 });
+      }
+      if (url === '/iam/admin/trusted-applications/1/portal/configuration') return Promise.resolve(portalApplicationDetail.portal);
+      if (url === '/iam/admin/trusted-applications/1/resource-verification-clients') return Promise.resolve([]);
+      if (url.endsWith('/permission-manifest')) return Promise.resolve(permissionManifest);
+      return Promise.resolve(pageBody);
+    });
+    installBridge(request);
+
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('.table-primary-action').trigger('click');
+    await flushPromises();
+    await wrapper.get('select[aria-label="默认页面"]').setValue('workspace');
+    await wrapper.get('.portal-default-entry input').setValue('/workspace/overview');
+    await wrapper.get('.portal-login-landing-field input').setValue(true);
+    await wrapper.get('form.drawer-form').trigger('submit');
+    await flushPromises();
+
+    const calls = request.mock.calls as unknown as Array<[string, { method?: string; body?: string } | undefined]>;
+    const configurationCall = calls.find(([url, init]) =>
+      url === '/iam/admin/trusted-applications/1/portal/configuration' && init?.method === 'PUT');
+    expect(JSON.parse(configurationCall![1]!.body!).defaultEntry).toEqual({
+      pageMenuCode: 'workspace', entryPath: '/workspace/overview'
+    });
+    const landingCall = calls.find(([url, init]) =>
+      url === '/iam/admin/portal/login-landing' && init?.method === 'PUT');
+    expect(JSON.parse(landingCall![1]!.body!)).toEqual({ applicationCode: 'demo', version: 5 });
+  });
+
+  it('门户菜单存在不完整 PAGE 时应阻断提交', async () => {
     const request = vi.fn((url: string) => {
       if (url === '/iam/admin/trusted-applications/1') {
         return Promise.resolve(portalApplicationDetail);
@@ -520,14 +592,44 @@ describe('TrustedApplicationsView', () => {
     await wrapper.get('.table-primary-action').trigger('click');
     await flushPromises();
 
-    await clickButton(wrapper, '添加菜单');
-    await wrapper.findAll('.menu-editor-row')[1].find('input')!.setValue('billing');
+    await clickButton(wrapper, '新增根级页面');
+    await wrapper.get('.menu-node-editor input').setValue('billing');
     await wrapper.get('form.drawer-form').trigger('submit');
     await flushPromises();
 
-    expect(wrapper.text()).toContain('门户菜单每一行都需填写编码、名称和路由');
+    expect(wrapper.text()).toContain('每个菜单都需填写编码和名称');
     const calls = request.mock.calls as unknown as Array<[string, { method?: string; body?: string } | undefined]>;
     expect(calls.some(([url, init]) =>
-      url === '/iam/admin/trusted-applications/1' && init?.method === 'PUT')).toBe(false);
+      url === '/iam/admin/trusted-applications/1/portal/configuration' && init?.method === 'PUT')).toBe(false);
+  });
+
+  it('门户菜单保存失败应在右上角通知中显示服务端错误', async () => {
+    const request = vi.fn((url: string, init?: { method?: string }) => {
+      if (url === '/iam/admin/trusted-applications/1') {
+        return Promise.resolve(portalApplicationDetail);
+      }
+      if (url === '/iam/admin/trusted-applications/1/portal/configuration' && init?.method === 'PUT') {
+        return Promise.reject(new Error('菜单配置保存失败'));
+      }
+      if (url === '/iam/admin/trusted-applications/1/resource-verification-clients') return Promise.resolve([]);
+      if (url.endsWith('/permission-manifest')) return Promise.resolve(permissionManifest);
+      return Promise.resolve(pageBody);
+    });
+    installBridge(request);
+
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('.table-primary-action').trigger('click');
+    await flushPromises();
+    await wrapper.get('form.drawer-form').trigger('submit');
+    await flushPromises();
+
+    const notice = wrapper.get('.operation-notice');
+    expect(notice.attributes('role')).toBe('alert');
+    expect(notice.text()).toContain('Portal 配置未保存：菜单配置保存失败');
+    const closeButton = notice.get('button[aria-label="关闭提示"]');
+    expect(closeButton.element).toBeInstanceOf(HTMLButtonElement);
+    await closeButton.trigger('click');
+    expect(wrapper.find('.operation-notice').exists()).toBe(false);
   });
 });

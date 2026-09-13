@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, FilePlus2, FolderPlus, Plus, Trash2, WandSparkles, X } from 'lucide-vue-next';
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import EntityDrawer from '../components/EntityDrawer.vue';
@@ -11,6 +12,7 @@ import {
   deleteTrustedApplication,
   deleteTrustedApplicationClient,
   fetchApplicationPermissionManifest,
+  fetchPortalLoginLanding,
   fetchResourceVerificationClients,
   fetchTrustedApplication,
   fetchTrustedApplications,
@@ -18,15 +20,22 @@ import {
   revokeResourceVerificationClient,
   rotateResourceVerificationClientSecret,
   updateTrustedApplication,
+  updateTrustedApplicationPortalConfiguration,
+  updatePortalLoginLanding,
   updateTrustedApplicationClient,
   type ApplicationPermissionManifest,
   type DataResourceDeclaration,
   type TrustedApplication,
   type TrustedApplicationClient,
   type TrustedApplicationDetail,
-  type TrustedApplicationResourceVerificationClient
+  type TrustedApplicationResourceVerificationClient,
+  type PortalMenuNodeType,
+  type PortalPresentationMode,
+  type PortalMenuTreeNode,
+  type PortalLoginLanding
 } from '../api/iamAuth';
-import { TRUSTED_APPLICATION_ICONS, trustedApplicationIcon } from '../trustedApplicationIcons';
+import { adminState } from '../adminState';
+import { TRUSTED_APPLICATION_ICONS, menuNodeIcon, trustedApplicationIcon } from '../trustedApplicationIcons';
 
 const trustedApplications = ref<TrustedApplication[]>([]);
 const errorMessage = ref('');
@@ -39,6 +48,31 @@ const loading = ref(false);
 const submitting = ref(false);
 const deleting = ref(false);
 const pageSize = ref(10);
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+const operationNotice = computed(() => errorMessage.value
+  ? { text: errorMessage.value, type: 'error' as const }
+  : message.value
+    ? { text: message.value, type: 'success' as const }
+    : null);
+
+watch(operationNotice, (notice) => {
+  if (noticeTimer) clearTimeout(noticeTimer);
+  if (!notice) return;
+  noticeTimer = setTimeout(() => {
+    if (notice.type === 'error' && errorMessage.value === notice.text) errorMessage.value = '';
+    if (notice.type === 'success' && message.value === notice.text) message.value = '';
+  }, 5000);
+});
+
+onBeforeUnmount(() => {
+  if (noticeTimer) clearTimeout(noticeTimer);
+});
+
+function closeOperationNotice() {
+  errorMessage.value = '';
+  message.value = '';
+}
 
 const createDrawerOpen = ref(false);
 const detailDrawerOpen = ref(false);
@@ -62,6 +96,7 @@ const manifestCurrent = ref<ApplicationPermissionManifest | null>(null);
 const manifestForm = reactive({ roles: '', pagePermissions: '', apiPermissions: '' });
 const manifestResourceText = ref('');
 const manifestSubmitting = ref(false);
+const portalLoginLanding = ref<PortalLoginLanding | null>(null);
 
 const createForm = reactive({
   applicationCode: '',
@@ -85,24 +120,226 @@ const editForm = reactive({
   icon: 'default',
   portalEnabled: false,
   portalEntry: '',
-  portalApiBase: ''
+  portalApiBase: '',
+  portalDefaultPageMenuCode: '',
+  portalDefaultEntryPath: '',
+  portalLoginLandingEnabled: false
 });
 
-interface MenuDraft {
+interface MenuTreeDraft {
+  draftId: string;
   code: string;
   name: string;
+  nodeType: PortalMenuNodeType;
+  icon: string;
   route: string;
+  requiredPagePermission: string;
+  presentationMode: PortalPresentationMode;
   sortOrder: number;
+  children: MenuTreeDraft[];
 }
 
-const menuDraft = ref<MenuDraft[]>([]);
-
-function addMenuRow() {
-  menuDraft.value.push({ code: '', name: '', route: '', sortOrder: menuDraft.value.length + 1 });
+interface FlatMenuTreeDraft {
+  node: MenuTreeDraft;
+  parent: MenuTreeDraft | null;
+  depth: number;
+  index: number;
 }
 
-function removeMenuRow(index: number) {
-  menuDraft.value.splice(index, 1);
+let menuDraftSequence = 0;
+const menuTreeDraft = ref<MenuTreeDraft[]>([]);
+const activeMenuDraftId = ref<string | null>(null);
+
+const flatMenuTreeDraft = computed<FlatMenuTreeDraft[]>(() => {
+  const rows: FlatMenuTreeDraft[] = [];
+  const visit = (nodes: MenuTreeDraft[], parent: MenuTreeDraft | null, depth: number) => {
+    nodes.forEach((node, index) => {
+      rows.push({ node, parent, depth, index });
+      visit(node.children, node, depth + 1);
+    });
+  };
+  visit(menuTreeDraft.value, null, 1);
+  return rows;
+});
+
+const menuGroupTargets = computed(() => flatMenuTreeDraft.value.filter(({ node }) => node.nodeType === 'GROUP'));
+const activeMenuRow = computed(() => flatMenuTreeDraft.value.find(({ node }) => node.draftId === activeMenuDraftId.value)
+  || flatMenuTreeDraft.value[0]
+  || null);
+const portalPageChoices = computed(() => flatMenuTreeDraft.value.filter(({ node }) => node.nodeType === 'PAGE'));
+const selectedDefaultPage = computed(() => portalPageChoices.value
+  .find(({ node }) => node.code === editForm.portalDefaultPageMenuCode)?.node || null);
+const canManagePortalLoginLanding = computed(() => adminState.currentUser?.authorities.includes('ROLE_iam_admin') || false);
+
+function nextDraftId() {
+  menuDraftSequence += 1;
+  return `menu-${menuDraftSequence}`;
+}
+
+function createMenuNode(nodeType: PortalMenuNodeType): MenuTreeDraft {
+  return {
+    draftId: nextDraftId(),
+    code: '',
+    name: '',
+    nodeType,
+    icon: '',
+    route: '',
+    requiredPagePermission: '',
+    presentationMode: 'STANDARD',
+    sortOrder: 0,
+    children: []
+  };
+}
+
+function cloneMenuTree(nodes: PortalMenuTreeNode[]): MenuTreeDraft[] {
+  return nodes.map(node => ({
+    draftId: nextDraftId(),
+    code: node.code,
+    name: node.name,
+    nodeType: node.nodeType,
+    icon: node.icon || '',
+    route: node.route || '',
+    requiredPagePermission: node.requiredPagePermission || '',
+    presentationMode: node.presentationMode === 'IMMERSIVE' ? 'IMMERSIVE' : 'STANDARD',
+    sortOrder: node.sortOrder,
+    children: cloneMenuTree(node.children || [])
+  }));
+}
+
+function normalizeMenuTreeOrder(nodes = menuTreeDraft.value) {
+  nodes.forEach((node, index) => {
+    node.sortOrder = index + 1;
+    normalizeMenuTreeOrder(node.children);
+  });
+}
+
+function addMenuNode(nodeType: PortalMenuNodeType, parent: MenuTreeDraft | null = null) {
+  const target = parent ? parent.children : menuTreeDraft.value;
+  const node = createMenuNode(nodeType);
+  target.push(node);
+  normalizeMenuTreeOrder();
+  activeMenuDraftId.value = node.draftId;
+}
+
+function selectMenuNode(node: MenuTreeDraft) {
+  activeMenuDraftId.value = node.draftId;
+}
+
+function menuGroupTargetLabel(target: FlatMenuTreeDraft) {
+  const prefix = target.depth > 1 ? `${'--'.repeat(target.depth - 1)} ` : '';
+  return `${prefix}${target.node.name || '未命名分组'}`;
+}
+
+function findMenuContext(draftId: string, nodes = menuTreeDraft.value, parent: MenuTreeDraft | null = null): FlatMenuTreeDraft | null {
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    if (node.draftId === draftId) {
+      return { node, parent, depth: 0, index };
+    }
+    const child = findMenuContext(draftId, node.children, node);
+    if (child) {
+      return child;
+    }
+  }
+  return null;
+}
+
+function isDescendant(candidate: MenuTreeDraft, ancestorDraftId: string): boolean {
+  return candidate.draftId === ancestorDraftId || candidate.children.some(child => isDescendant(child, ancestorDraftId));
+}
+
+function canUseAsParent(node: MenuTreeDraft, candidate: MenuTreeDraft) {
+  return candidate.nodeType === 'GROUP' && !isDescendant(node, candidate.draftId);
+}
+
+function changeMenuParent(node: MenuTreeDraft, parentDraftId: string) {
+  const context = findMenuContext(node.draftId);
+  if (!context) return;
+  const nextParent = parentDraftId ? findMenuContext(parentDraftId)?.node || null : null;
+  if (nextParent && !canUseAsParent(node, nextParent)) {
+    errorMessage.value = '不能把菜单移动到自身或其后代节点下';
+    return;
+  }
+  const source = context.parent ? context.parent.children : menuTreeDraft.value;
+  source.splice(context.index, 1);
+  (nextParent ? nextParent.children : menuTreeDraft.value).push(node);
+  normalizeMenuTreeOrder();
+  activeMenuDraftId.value = node.draftId;
+}
+
+function moveMenuNode(node: MenuTreeDraft, direction: -1 | 1) {
+  const context = findMenuContext(node.draftId);
+  if (!context) return;
+  const siblings = context.parent ? context.parent.children : menuTreeDraft.value;
+  const nextIndex = context.index + direction;
+  if (nextIndex < 0 || nextIndex >= siblings.length) return;
+  [siblings[context.index], siblings[nextIndex]] = [siblings[nextIndex], siblings[context.index]];
+  normalizeMenuTreeOrder();
+}
+
+function removeMenuNode(node: MenuTreeDraft) {
+  if (node.nodeType === 'GROUP' && node.children.length > 0) {
+    errorMessage.value = '分组仍包含子菜单，请先移动或删除全部子菜单';
+    return;
+  }
+  const context = findMenuContext(node.draftId);
+  if (!context) return;
+  const siblings = context.parent ? context.parent.children : menuTreeDraft.value;
+  siblings.splice(context.index, 1);
+  normalizeMenuTreeOrder();
+  activeMenuDraftId.value = siblings[context.index]?.draftId || siblings[context.index - 1]?.draftId || context.parent?.draftId || null;
+}
+
+function selectMenuNodeType(node: MenuTreeDraft, nodeType: PortalMenuNodeType) {
+  if (node.nodeType === nodeType) return;
+  if (node.children.length > 0 && nodeType === 'PAGE') {
+    errorMessage.value = '含有子菜单的分组不能直接改为页面，请先处理子菜单';
+    return;
+  }
+  node.nodeType = nodeType;
+  if (nodeType === 'GROUP') {
+    node.route = '';
+    node.requiredPagePermission = '';
+    node.presentationMode = 'STANDARD';
+  }
+}
+
+function validateMenuTree(nodes: MenuTreeDraft[], depth = 1, codes = new Set<string>()): string | null {
+  if (depth > 4) return '门户菜单最多支持 4 层';
+  for (const node of nodes) {
+    const code = node.code.trim();
+    if (!code || !node.name.trim()) return '每个菜单都需填写编码和名称';
+    if (codes.has(code)) return `菜单编码“${code}”重复`;
+    codes.add(code);
+    if (node.nodeType === 'GROUP') {
+      if (node.route.trim() || node.requiredPagePermission.trim() || node.presentationMode !== 'STANDARD') return `分组“${code}”不能配置路由、页面权限或展示模式`;
+      if (node.children.length === 0) return `分组“${code}”至少需要一个子菜单`;
+    } else {
+      if (!node.route.trim().startsWith('/')) return `页面“${code}”的路由必须以 / 开头`;
+      if (!['STANDARD', 'IMMERSIVE'].includes(node.presentationMode)) return `页面“${code}”的展示模式不受支持`;
+      if (node.children.length > 0) return `页面“${code}”不能包含子菜单`;
+      if (node.requiredPagePermission.trim() && !manifestCurrent.value?.pagePermissions.includes(node.requiredPagePermission.trim())) {
+        return `页面“${code}”绑定的页面权限不在当前权限清单中`;
+      }
+    }
+    const error = validateMenuTree(node.children, depth + 1, codes);
+    if (error) return error;
+  }
+  return null;
+}
+
+function toMenuTreePayload(nodes: MenuTreeDraft[]): PortalMenuTreeNode[] {
+  return nodes.map(node => ({
+    code: node.code.trim(),
+    name: node.name.trim(),
+    nodeType: node.nodeType,
+    icon: node.icon.trim() || null,
+    route: node.nodeType === 'PAGE' ? node.route.trim() : null,
+    requiredPagePermission: node.nodeType === 'PAGE' && node.requiredPagePermission.trim() ? node.requiredPagePermission.trim() : null,
+    presentationMode: node.nodeType === 'PAGE' ? node.presentationMode : null,
+    sortOrder: node.sortOrder,
+    children: toMenuTreePayload(node.children)
+  }));
 }
 
 const clientForm = reactive({
@@ -229,7 +466,12 @@ async function openDetail(application: TrustedApplication) {
   errorMessage.value = '';
   rotateSecretResult.value = null;
   try {
-    detail.value = await fetchTrustedApplication(application.id);
+    const [applicationDetail, loginLanding] = await Promise.all([
+      fetchTrustedApplication(application.id),
+      fetchPortalLoginLanding()
+    ]);
+    detail.value = applicationDetail;
+    portalLoginLanding.value = loginLanding;
     syncEditStateFromDetail();
     detailDrawerOpen.value = true;
     await Promise.all([loadResourceClients(application.id), loadManifest(application.id)]);
@@ -301,14 +543,28 @@ function syncEditStateFromDetail() {
     icon: detail.value.icon || 'default',
     portalEnabled: detail.value.portal?.enabled || false,
     portalEntry: detail.value.portal?.entry || '',
-    portalApiBase: detail.value.portal?.apiBase || ''
+    portalApiBase: detail.value.portal?.apiBase || '',
+    portalDefaultPageMenuCode: detail.value.portal?.defaultEntry?.pageMenuCode || '',
+    portalDefaultEntryPath: detail.value.portal?.defaultEntry?.path || '',
+    portalLoginLandingEnabled: portalLoginLanding.value?.applicationCode === detail.value.applicationCode
   });
-  menuDraft.value = (detail.value.portal?.menus || []).map(menu => ({
-    code: menu.code,
-    name: menu.name,
-    route: menu.route,
-    sortOrder: menu.sortOrder
-  }));
+  const menuTree = detail.value.portal?.menuTree;
+  menuTreeDraft.value = Array.isArray(menuTree)
+    ? cloneMenuTree(menuTree)
+    : (detail.value.portal?.menus || []).map(menu => ({
+      draftId: nextDraftId(),
+      code: menu.code,
+      name: menu.name,
+      nodeType: 'PAGE' as const,
+      icon: '',
+      route: menu.route,
+      requiredPagePermission: '',
+      presentationMode: 'STANDARD' as const,
+      sortOrder: menu.sortOrder,
+      children: []
+    }));
+  normalizeMenuTreeOrder();
+  activeMenuDraftId.value = menuTreeDraft.value[0]?.draftId || null;
 }
 
 async function loadResourceClients(applicationId: number) {
@@ -380,40 +636,88 @@ function formatDateTime(value: string) {
 
 async function submitUpdateApplication() {
   if (!detail.value) return;
-  const filledMenus = menuDraft.value.filter(menu => menu.code.trim() || menu.name.trim() || menu.route.trim());
-  if (filledMenus.some(menu => !menu.code.trim() || !menu.name.trim() || !menu.route.trim())) {
-    errorMessage.value = '门户菜单每一行都需填写编码、名称和路由';
+  const menuError = editForm.portalEnabled ? validateMenuTree(menuTreeDraft.value) : null;
+  if (menuError) {
+    errorMessage.value = menuError;
+    return;
+  }
+  const defaultEntryError = validateDefaultEntry();
+  if (defaultEntryError) {
+    errorMessage.value = defaultEntryError;
+    return;
+  }
+  if (editForm.portalLoginLandingEnabled
+    && (!editForm.portalEnabled || !editForm.portalDefaultPageMenuCode)) {
+    errorMessage.value = '全局登录首页必须选择已启用应用的默认页面';
     return;
   }
   submitting.value = true;
   message.value = '';
   errorMessage.value = '';
+  let basicSaved = false;
   try {
     await updateTrustedApplication(detail.value.id, {
       applicationName: editForm.applicationName,
       description: editForm.description,
-      icon: editForm.icon,
-      portal: {
-        enabled: editForm.portalEnabled,
-        ...(editForm.portalEntry ? { entry: editForm.portalEntry } : {}),
-        ...(editForm.portalApiBase ? { apiBase: editForm.portalApiBase } : {}),
-        menus: filledMenus.map(menu => ({
-          code: menu.code.trim(),
-          name: menu.name.trim(),
-          route: menu.route.trim(),
-          sortOrder: menu.sortOrder
-        }))
-      }
+      icon: editForm.icon
     });
+    basicSaved = true;
+    await updateTrustedApplicationPortalConfiguration(detail.value.id, {
+      enabled: editForm.portalEnabled,
+      ...(editForm.portalEntry ? { entry: editForm.portalEntry } : {}),
+      ...(editForm.portalApiBase ? { apiBase: editForm.portalApiBase } : {}),
+      menuTree: toMenuTreePayload(menuTreeDraft.value),
+      defaultEntry: editForm.portalDefaultPageMenuCode
+        ? {
+            pageMenuCode: editForm.portalDefaultPageMenuCode,
+            ...(editForm.portalDefaultEntryPath.trim() ? { entryPath: editForm.portalDefaultEntryPath.trim() } : {})
+          }
+        : null,
+      configVersion: detail.value.portal?.configVersion || 0
+    });
+    if (canManagePortalLoginLanding.value && portalLoginLanding.value) {
+      const applicationCode = editForm.portalLoginLandingEnabled ? detail.value.applicationCode : null;
+      if (applicationCode !== portalLoginLanding.value.applicationCode) {
+        portalLoginLanding.value = await updatePortalLoginLanding({
+          applicationCode,
+          version: portalLoginLanding.value.version
+        });
+      }
+    }
     message.value = '应用资料已更新';
-    detail.value = await fetchTrustedApplication(detail.value.id);
+    const [applicationDetail, loginLanding] = await Promise.all([
+      fetchTrustedApplication(detail.value.id),
+      fetchPortalLoginLanding()
+    ]);
+    detail.value = applicationDetail;
+    portalLoginLanding.value = loginLanding;
     syncEditStateFromDetail();
     await loadTrustedApplications();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '更新应用失败';
+    const reason = error instanceof Error ? error.message : '更新应用失败';
+    errorMessage.value = basicSaved ? `基本资料已保存，Portal 配置未保存：${reason}` : reason;
   } finally {
     submitting.value = false;
   }
+}
+
+function validateDefaultEntry() {
+  const page = selectedDefaultPage.value;
+  const path = editForm.portalDefaultEntryPath.trim();
+  if (!editForm.portalDefaultPageMenuCode) {
+    return path ? '未选择默认页面时不能填写入口路径' : '';
+  }
+  if (!page || !page.route) {
+    return '默认页面必须是当前菜单树中的页面节点';
+  }
+  if (!path) {
+    return '';
+  }
+  if (!path.startsWith('/') || /[?#\\]/.test(path) || path.includes('..')
+    || (page.route !== '/' && path !== page.route && !path.startsWith(`${page.route}/`))) {
+    return '默认入口必须是所选页面路由内的静态路径';
+  }
+  return '';
 }
 
 function openCreateDrawer() {
@@ -538,8 +842,19 @@ onMounted(loadTrustedApplications);
       @primary="openCreateDrawer"
     />
 
-    <p v-if="message" class="admin-message success" role="status">{{ message }}</p>
-    <p v-if="errorMessage" class="admin-message error" role="alert">{{ errorMessage }}</p>
+    <aside
+      v-if="operationNotice"
+      class="operation-notice"
+      :class="operationNotice.type"
+      :role="operationNotice.type === 'error' ? 'alert' : 'status'"
+    >
+      <AlertCircle v-if="operationNotice.type === 'error'" :size="18" aria-hidden="true" />
+      <CheckCircle2 v-else :size="18" aria-hidden="true" />
+      <span>{{ operationNotice.text }}</span>
+      <button type="button" aria-label="关闭提示" @click="closeOperationNotice">
+        <X :size="16" aria-hidden="true" />
+      </button>
+    </aside>
 
     <section class="admin-data-surface" aria-label="可信应用列表" :aria-busy="loading">
       <header class="data-toolbar">
@@ -635,6 +950,7 @@ onMounted(loadTrustedApplications);
       :open="detailDrawerOpen && Boolean(detail)"
       :pending="submitting"
       wide
+      extra-wide
       :title="detail ? detail.applicationName : '应用详情'"
       :description="detail ? `${detail.applicationCode} · ${detail.clients.length} 个客户端` : ''"
       @close="!submitting && (detailDrawerOpen = false)"
@@ -655,19 +971,147 @@ onMounted(loadTrustedApplications);
           <label><span>子应用入口地址</span><input v-model="editForm.portalEntry" placeholder="如 /app/iam/ 或完整 URL" :disabled="!editForm.portalEnabled"></label>
           <label><span>API 基础路径</span><input v-model="editForm.portalApiBase" placeholder="如 /iam/" :disabled="!editForm.portalEnabled"></label>
           <p v-if="detail.portal?.routePrefix" class="drawer-hint">门户路由前缀：{{ detail.portal.routePrefix }}（由应用编码决定，不可修改）</p>
-          <div class="menu-editor" :aria-label="`门户菜单（${menuDraft.length} 项）`">
-            <div v-for="(menu, index) in menuDraft" :key="index" class="menu-editor-row">
-              <label><span>菜单编码</span><input v-model="menu.code" :disabled="!editForm.portalEnabled" placeholder="如 workspace" required></label>
-              <label><span>菜单名称</span><input v-model="menu.name" :disabled="!editForm.portalEnabled" placeholder="如 工作台" required></label>
-              <label><span>路由（相对路径）</span><input v-model="menu.route" :disabled="!editForm.portalEnabled" placeholder="如 /organizations" required></label>
-              <label><span>排序</span><input v-model.number="menu.sortOrder" :disabled="!editForm.portalEnabled" type="number" min="1" step="1"></label>
-              <div class="menu-row-actions">
-                <button class="table-action danger" type="button" :disabled="!editForm.portalEnabled" @click="removeMenuRow(index)">移除菜单</button>
+          <section class="portal-default-entry" aria-label="Portal 默认入口">
+            <header>
+              <div>
+                <h4>应用默认入口</h4>
+                <p>仅在访问应用根路径时生效；已指定的页面深链不会被替换。</p>
               </div>
+            </header>
+            <label><span>默认页面</span>
+              <select v-model="editForm.portalDefaultPageMenuCode" :disabled="!editForm.portalEnabled" aria-label="默认页面">
+                <option value="">不设置，按首个可访问页面进入</option>
+                <option v-for="choice in portalPageChoices" :key="choice.node.draftId" :value="choice.node.code">
+                  {{ choice.node.name || '未命名页面' }} · {{ choice.node.route || '待填写路由' }}
+                </option>
+              </select>
+            </label>
+            <label v-if="editForm.portalDefaultPageMenuCode"><span>静态子路径</span>
+              <input v-model="editForm.portalDefaultEntryPath" :disabled="!editForm.portalEnabled" :placeholder="selectedDefaultPage?.route || '/page'">
+            </label>
+            <p v-if="selectedDefaultPage?.route" class="drawer-hint">留空使用 {{ selectedDefaultPage.route }}；填写时只能使用该页面路由及其子路径，不能包含参数或片段。</p>
+            <label v-if="canManagePortalLoginLanding" class="checkbox-field portal-login-landing-field">
+              <input v-model="editForm.portalLoginLandingEnabled" type="checkbox" :disabled="!editForm.portalEnabled || !editForm.portalDefaultPageMenuCode">
+              <span>作为无深链登录后的 Portal 首页</span>
+            </label>
+          </section>
+          <section class="menu-editor" :aria-label="`门户菜单（${flatMenuTreeDraft.length} 项）`">
+            <header class="menu-editor-header">
+              <div>
+                <h4>门户菜单</h4>
+                <p>分组负责结构，页面配置路由和页面权限。</p>
+              </div>
+              <span class="menu-editor-count">{{ flatMenuTreeDraft.length }} 项</span>
+            </header>
+            <div class="menu-editor-toolbar">
+              <button class="button-secondary" type="button" :disabled="!editForm.portalEnabled" @click="addMenuNode('GROUP')"><Plus :size="16" aria-hidden="true" />新增根级分组</button>
+              <button class="button-secondary" type="button" :disabled="!editForm.portalEnabled" @click="addMenuNode('PAGE')"><Plus :size="16" aria-hidden="true" />新增根级页面</button>
             </div>
-            <button class="button-secondary" type="button" :disabled="!editForm.portalEnabled" @click="addMenuRow">添加菜单</button>
-            <p class="drawer-hint">菜单路由为相对路径，门户渲染时拼接路由前缀；保存按整表覆盖，移除行即删除菜单。</p>
-          </div>
+            <p v-if="flatMenuTreeDraft.length === 0" class="drawer-hint-block">尚未配置菜单。先新增根级分组或页面，再从右侧编辑节点详情。</p>
+            <div v-else class="menu-editor-workbench">
+              <nav class="menu-tree-navigator" aria-label="菜单结构">
+                <p>菜单结构</p>
+                <button
+                  v-for="row in flatMenuTreeDraft"
+                  :key="row.node.draftId"
+                  class="menu-tree-node"
+                  :class="[
+                    `menu-tree-node--${row.node.nodeType.toLowerCase()}`,
+                    { active: activeMenuRow?.node.draftId === row.node.draftId, 'menu-tree-node--nested': row.depth > 1 }
+                  ]"
+                  :style="{ '--menu-depth': row.depth - 1 }"
+                  type="button"
+                  :aria-current="activeMenuRow?.node.draftId === row.node.draftId ? 'true' : undefined"
+                  :title="`${row.node.nodeType === 'GROUP' ? '分组' : '页面'}：${row.node.name || '未命名节点'}`"
+                  @click="selectMenuNode(row.node)"
+                >
+                  <component :is="menuNodeIcon(row.node.icon, row.node.nodeType).component" :size="17" :stroke-width="2" aria-hidden="true" />
+                  <span class="menu-tree-node-copy"><strong>{{ row.node.name || '未命名节点' }}</strong><small>{{ row.node.code || '待填写编码' }}</small></span>
+                  <span class="menu-tree-node-type">{{ row.node.nodeType === 'GROUP' ? '分组' : '页面' }}</span>
+                </button>
+              </nav>
+              <section v-if="activeMenuRow" class="menu-node-editor" aria-label="菜单节点编辑">
+                <header class="menu-node-editor-header">
+                  <div class="menu-node-editor-title">
+                    <component :is="menuNodeIcon(activeMenuRow.node.icon, activeMenuRow.node.nodeType).component" :size="20" :stroke-width="2" aria-hidden="true" />
+                    <div><span>{{ activeMenuRow.node.nodeType === 'GROUP' ? '分组' : '页面' }} · 第 {{ activeMenuRow.depth }} 层</span><h5>{{ activeMenuRow.node.name || '未命名节点' }}</h5></div>
+                  </div>
+                  <div class="menu-node-actions">
+                    <button class="menu-node-icon-action" type="button" aria-label="上移当前节点" title="上移当前节点" :disabled="!editForm.portalEnabled || activeMenuRow.index === 0" @click="moveMenuNode(activeMenuRow.node, -1)"><ArrowUp :size="16" aria-hidden="true" /></button>
+                    <button class="menu-node-icon-action" type="button" aria-label="下移当前节点" title="下移当前节点" :disabled="!editForm.portalEnabled || activeMenuRow.index === (activeMenuRow.parent ? activeMenuRow.parent.children.length : menuTreeDraft.length) - 1" @click="moveMenuNode(activeMenuRow.node, 1)"><ArrowDown :size="16" aria-hidden="true" /></button>
+                    <template v-if="activeMenuRow.node.nodeType === 'GROUP'">
+                      <button class="menu-node-icon-action" type="button" aria-label="在当前分组下新增分组" title="在当前分组下新增分组" :disabled="!editForm.portalEnabled || activeMenuRow.depth >= 4" @click="addMenuNode('GROUP', activeMenuRow.node)"><FolderPlus :size="16" aria-hidden="true" /></button>
+                      <button class="menu-node-icon-action" type="button" aria-label="在当前分组下新增页面" title="在当前分组下新增页面" :disabled="!editForm.portalEnabled || activeMenuRow.depth >= 4" @click="addMenuNode('PAGE', activeMenuRow.node)"><FilePlus2 :size="16" aria-hidden="true" /></button>
+                    </template>
+                    <button class="menu-node-icon-action danger" type="button" aria-label="移除当前节点" title="移除当前节点" :disabled="!editForm.portalEnabled" @click="removeMenuNode(activeMenuRow.node)"><Trash2 :size="16" aria-hidden="true" /></button>
+                  </div>
+                </header>
+                <div class="menu-editor-fields">
+                  <label><span>节点类型</span>
+                    <select :value="activeMenuRow.node.nodeType" :disabled="!editForm.portalEnabled" @change="selectMenuNodeType(activeMenuRow.node, ($event.target as HTMLSelectElement).value as PortalMenuNodeType)">
+                      <option value="GROUP">分组</option>
+                      <option value="PAGE">页面</option>
+                    </select>
+                  </label>
+                  <label><span>父级分组</span>
+                    <select :value="activeMenuRow.parent?.draftId || ''" :disabled="!editForm.portalEnabled" @change="changeMenuParent(activeMenuRow.node, ($event.target as HTMLSelectElement).value)">
+                      <option value="">根级</option>
+                      <option v-for="target in menuGroupTargets.filter(({ node }) => canUseAsParent(activeMenuRow.node, node))" :key="target.node.draftId" :value="target.node.draftId">{{ menuGroupTargetLabel(target) }}</option>
+                    </select>
+                  </label>
+                  <label><span>菜单编码</span><input v-model="activeMenuRow.node.code" :disabled="!editForm.portalEnabled" placeholder="如 workspace" required></label>
+                  <label><span>菜单名称</span><input v-model="activeMenuRow.node.name" :disabled="!editForm.portalEnabled" placeholder="如 工作台" required></label>
+                  <fieldset class="menu-node-icon-field" :disabled="!editForm.portalEnabled">
+                    <legend>菜单图标</legend>
+                    <div class="menu-node-icon-picker" role="radiogroup" aria-label="菜单图标">
+                      <button
+                        class="menu-node-icon-choice"
+                        :class="{ active: !activeMenuRow.node.icon }"
+                        type="button"
+                        role="radio"
+                        :aria-checked="!activeMenuRow.node.icon"
+                        aria-label="按节点类型自动选择"
+                        title="按节点类型自动选择"
+                        @click="activeMenuRow.node.icon = ''"
+                      >
+                        <WandSparkles :size="17" aria-hidden="true" />
+                      </button>
+                      <button
+                        v-for="icon in TRUSTED_APPLICATION_ICONS"
+                        :key="icon.code"
+                        class="menu-node-icon-choice"
+                        :class="{ active: activeMenuRow.node.icon === icon.code }"
+                        type="button"
+                        role="radio"
+                        :aria-checked="activeMenuRow.node.icon === icon.code"
+                        :aria-label="icon.label"
+                        :title="icon.label"
+                        @click="activeMenuRow.node.icon = icon.code"
+                      >
+                        <component :is="icon.component" :size="17" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </fieldset>
+                  <template v-if="activeMenuRow.node.nodeType === 'PAGE'">
+                    <label><span>路由（相对路径）</span><input v-model="activeMenuRow.node.route" :disabled="!editForm.portalEnabled" placeholder="如 /organizations" required></label>
+                    <label><span>门户展示</span>
+                      <select v-model="activeMenuRow.node.presentationMode" :disabled="!editForm.portalEnabled" aria-label="门户展示">
+                        <option value="STANDARD">标准布局</option>
+                        <option value="IMMERSIVE">沉浸展示（隐藏 Portal 顶栏和左侧栏）</option>
+                      </select>
+                    </label>
+                    <label><span>页面权限</span>
+                      <select v-model="activeMenuRow.node.requiredPagePermission" :disabled="!editForm.portalEnabled">
+                        <option value="">继承应用准入</option>
+                        <option v-for="permission in manifestCurrent?.pagePermissions || []" :key="permission" :value="permission">{{ permission }}</option>
+                      </select>
+                    </label>
+                  </template>
+                </div>
+              </section>
+            </div>
+            <p class="drawer-hint">最多 4 层；保存以菜单树完整覆盖。页面路由相对应用路由前缀，留空页面权限即继承应用准入。</p>
+          </section>
           <footer class="drawer-actions">
             <button class="button-secondary" type="button" :disabled="submitting" @click="detailDrawerOpen = false">关闭</button>
             <button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在保存…' : '保存应用资料' }}</button>

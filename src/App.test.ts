@@ -56,6 +56,7 @@ describe('Admin App', () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain('dashboard');
+    expect(wrapper.classes()).toContain('iam-admin-app--embedded');
     expect(wrapper.find('.iam-module-nav').exists()).toBe(false);
     expect(wrapper.text()).not.toContain('退出登录');
     expect(wrapper.find('.logout-button').exists()).toBe(false);
@@ -67,6 +68,7 @@ describe('Admin App', () => {
     await flushPromises();
 
     expect(wrapper.find('.iam-module-nav').exists()).toBe(true);
+    expect(wrapper.classes()).not.toContain('iam-admin-app--embedded');
     expect(wrapper.text()).toContain('组织与成员');
     expect(wrapper.text()).toContain('协作组管理');
     expect(wrapper.text()).toContain('站内信');

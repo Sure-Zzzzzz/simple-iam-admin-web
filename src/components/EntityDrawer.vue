@@ -7,6 +7,7 @@ const props = defineProps<{
   description?: string;
   pending?: boolean;
   wide?: boolean;
+  extraWide?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -45,7 +46,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
     <aside
       ref="drawer"
       class="entity-drawer"
-      :class="{ 'entity-drawer-wide': wide }"
+      :class="{ 'entity-drawer-wide': wide, 'entity-drawer-extra-wide': extraWide }"
       role="dialog"
       aria-modal="true"
       :aria-label="title"

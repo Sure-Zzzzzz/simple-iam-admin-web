@@ -39,6 +39,7 @@ import {
   type UserApplicationAuthorization,
   type UserPageQuery
 } from '../api/iamAuth';
+import { adminState } from '../adminState';
 
 const route = useRoute();
 const router = useRouter();
@@ -168,6 +169,18 @@ const selectedUserIsPlatformAdmin = computed(() =>
   selectedUserRoles.value.some(role => role.code === 'iam_admin')
 );
 
+function hasApiPermission(permission: string): boolean {
+  const currentUser = adminState.currentUser;
+  return Boolean(currentUser?.admin || currentUser?.authorities.includes(permission));
+}
+
+const canReadRoleCatalog = computed(() => hasApiPermission('iam:role:api'));
+const canReadDepartmentCatalog = computed(() => hasApiPermission('iam:department:api'));
+const canReadTrustedApplicationCatalog = computed(() => hasApiPermission('iam:trusted-application:api'));
+const hasRestrictedUserTools = computed(() =>
+  !canReadRoleCatalog.value || !canReadDepartmentCatalog.value || !canReadTrustedApplicationCatalog.value
+);
+
 function applicationLabel(applicationId: number): string {
   const application = trustedApplications.value.find(item => item.id === applicationId);
   return application
@@ -238,9 +251,9 @@ async function loadUsers() {
   try {
     const [userPage, roleList, departmentList, applicationList] = await Promise.all([
       fetchUsers(buildUserQuery()),
-      fetchRoles(),
-      fetchDepartments(),
-      fetchAllTrustedApplications()
+      canReadRoleCatalog.value ? fetchRoles() : Promise.resolve([]),
+      canReadDepartmentCatalog.value ? fetchDepartments() : Promise.resolve([]),
+      canReadTrustedApplicationCatalog.value ? fetchAllTrustedApplications() : Promise.resolve([])
     ]);
     users.value = userPage.content;
     totalElements.value = userPage.totalElements;
@@ -273,7 +286,7 @@ async function submitCreateUser() {
       displayName: createForm.displayName,
       email: createForm.email,
       phone: createForm.phone,
-      departmentId: toDepartmentId(createForm.departmentId)
+      departmentId: canReadDepartmentCatalog.value ? toDepartmentId(createForm.departmentId) : null
     });
     createDrawerOpen.value = false;
     resetCreateForm();
@@ -297,7 +310,9 @@ async function selectUser(user: IamUser) {
   });
   const [roleList, authorizationList] = await Promise.all([
     fetchUserRoles(user.id),
-    fetchUserApplicationAuthorizations(user.id)
+    canReadTrustedApplicationCatalog.value
+      ? fetchUserApplicationAuthorizations(user.id)
+      : Promise.resolve([])
   ]);
   selectedUserRoles.value = roleList;
   selectedUserAuthorizations.value = authorizationList;
@@ -314,8 +329,10 @@ async function submitUpdateUser() {
       displayName: editForm.displayName,
       email: editForm.email,
       phone: editForm.phone,
-      departmentId: toDepartmentId(editForm.departmentId),
-      clearDepartment: !editForm.departmentId
+      departmentId: canReadDepartmentCatalog.value
+        ? toDepartmentId(editForm.departmentId)
+        : selectedUser.value.departmentId,
+      clearDepartment: canReadDepartmentCatalog.value && !editForm.departmentId
     });
     selectedUser.value = updated;
     message.value = '用户信息已更新';
@@ -591,6 +608,9 @@ watch(() => route.query, () => {
     />
     <p v-if="message" class="admin-message success" role="status">{{ message }}</p>
     <p v-if="errorMessage" class="admin-message error" role="alert">{{ errorMessage }}</p>
+    <p v-if="hasRestrictedUserTools" class="assignment-empty">
+      当前账号只具备部分用户管理范围；角色、组织和应用授权按独立权限控制。
+    </p>
 
     <section class="panel">
       <div>
@@ -711,11 +731,12 @@ watch(() => route.query, () => {
           </label>
           <label>
             <span>部门</span>
-            <select v-model="editForm.departmentId">
+            <select v-if="canReadDepartmentCatalog" v-model="editForm.departmentId">
               <option value="">未分配部门</option>
               <option v-for="department in departments" :key="department.id" :value="String(department.id)">
                 {{ department.name }}（{{ department.code }}）              </option>
             </select>
+            <span v-else class="assignment-empty">{{ selectedUser.departmentName || '未分配部门' }}（当前角色不能变更部门）</span>
           </label>
           <button type="submit">保存基础信息</button>
         </form>
@@ -733,13 +754,15 @@ watch(() => route.query, () => {
           </button>
           <span v-if="selectedUserRoles.length === 0">暂无角色</span>
         </div>
-        <h3>可分配角色</h3>
-        <div class="tag-list">
-          <button v-for="role in assignableRoles" :key="role.id" type="button" @click="assignRole(role.id)">
-            + {{ role.code }}
-          </button>
-          <span v-if="assignableRoles.length === 0">无可分配角色</span>
-        </div>
+        <template v-if="canReadRoleCatalog">
+          <h3>可分配角色</h3>
+          <div class="tag-list">
+            <button v-for="role in assignableRoles" :key="role.id" type="button" @click="assignRole(role.id)">
+              + {{ role.code }}
+            </button>
+            <span v-if="assignableRoles.length === 0">无可分配角色</span>
+          </div>
+        </template>
 
         <h3>外部身份</h3>
         <div v-if="selectedUser.identitySource" class="external-identity-bound">
@@ -763,64 +786,66 @@ watch(() => route.query, () => {
         </form>
         <p v-if="!selectedUser.identitySource && loginProviders.length === 0" class="assignment-empty">未装配外部登录方式</p>
 
-        <h3>已授权应用</h3>
-        <p v-if="selectedUserIsPlatformAdmin" class="assignment-empty platform-admin-note">
-          该用户是平台管理员：拥有全部应用的准入与权限清单申报范围的全量权限（解析时特权合并，不体现为授权记录）。撤销单应用授权不会生效，降权请摘除 iam_admin 角色。
-        </p>
-        <div class="app-auth-list">
-          <article v-for="authorization in activeAuthorizations" :key="authorization.applicationId">
-            <div>
-              <strong>{{ applicationLabel(authorization.applicationId) }}</strong>
-              <span>准入 · 版本 v{{ authorization.authorizationVersion }}<template v-if="authorization.manifestVersion"> · 清单 {{ authorization.manifestVersion }}</template><template v-if="authorization.updatedAt"> · {{ formatDateTime(authorization.updatedAt) }}</template></span>
-            </div>
-            <div class="app-auth-actions">
+        <template v-if="canReadTrustedApplicationCatalog">
+          <h3>已授权应用</h3>
+          <p v-if="selectedUserIsPlatformAdmin" class="assignment-empty platform-admin-note">
+            该用户是平台管理员：拥有全部应用的准入与权限清单申报范围的全量权限（解析时特权合并，不体现为授权记录）。撤销单应用授权不会生效，降权请摘除 iam_admin 角色。
+          </p>
+          <div class="app-auth-list">
+            <article v-for="authorization in activeAuthorizations" :key="authorization.applicationId">
+              <div>
+                <strong>{{ applicationLabel(authorization.applicationId) }}</strong>
+                <span>准入 · 版本 v{{ authorization.authorizationVersion }}<template v-if="authorization.manifestVersion"> · 清单 {{ authorization.manifestVersion }}</template><template v-if="authorization.updatedAt"> · {{ formatDateTime(authorization.updatedAt) }}</template></span>
+              </div>
+              <div class="app-auth-actions">
+                <button
+                  v-if="trustedApplications.some(item => item.id === authorization.applicationId)"
+                  type="button"
+                  class="table-action"
+                  @click="openGrantDrawer(trustedApplications.find(item => item.id === authorization.applicationId)!, authorization)"
+                >
+                  编辑授权
+                </button>
+                <button
+                  v-if="trustedApplications.some(item => item.id === authorization.applicationId)"
+                  type="button"
+                  class="table-action danger"
+                  :disabled="selectedUserIsPlatformAdmin"
+                  :title="selectedUserIsPlatformAdmin ? '平台管理员特权不受单应用撤销影响，请摘除 iam_admin 角色' : undefined"
+                  @click="askRevokeApplication(trustedApplications.find(item => item.id === authorization.applicationId)!)"
+                >
+                  撤销授权
+                </button>
+              </div>
+            </article>
+            <article v-for="authorization in revokedAuthorizations" :key="`revoked-${authorization.applicationId}`" class="revoked">
+              <div>
+                <strong>{{ applicationLabel(authorization.applicationId) }}</strong>
+                <span>已撤销<template v-if="authorization.revokedAt"> · {{ formatDateTime(authorization.revokedAt) }}</template> · 可重新授权</span>
+              </div>
               <button
                 v-if="trustedApplications.some(item => item.id === authorization.applicationId)"
                 type="button"
                 class="table-action"
-                @click="openGrantDrawer(trustedApplications.find(item => item.id === authorization.applicationId)!, authorization)"
+                @click="openGrantDrawer(trustedApplications.find(item => item.id === authorization.applicationId)!, null)"
               >
-                编辑授权
+                重新授权
               </button>
-              <button
-                v-if="trustedApplications.some(item => item.id === authorization.applicationId)"
-                type="button"
-                class="table-action danger"
-                :disabled="selectedUserIsPlatformAdmin"
-                :title="selectedUserIsPlatformAdmin ? '平台管理员特权不受单应用撤销影响，请摘除 iam_admin 角色' : undefined"
-                @click="askRevokeApplication(trustedApplications.find(item => item.id === authorization.applicationId)!)"
-              >
-                撤销授权
-              </button>
-            </div>
-          </article>
-          <article v-for="authorization in revokedAuthorizations" :key="`revoked-${authorization.applicationId}`" class="revoked">
-            <div>
-              <strong>{{ applicationLabel(authorization.applicationId) }}</strong>
-              <span>已撤销<template v-if="authorization.revokedAt"> · {{ formatDateTime(authorization.revokedAt) }}</template> · 可重新授权</span>
-            </div>
-            <button
-              v-if="trustedApplications.some(item => item.id === authorization.applicationId)"
-              type="button"
-              class="table-action"
-              @click="openGrantDrawer(trustedApplications.find(item => item.id === authorization.applicationId)!, null)"
-            >
-              重新授权
-            </button>
-          </article>
-          <span v-if="selectedUserAuthorizations.length === 0" class="assignment-empty">暂无应用授权</span>
-        </div>
-        <h3>可授权应用</h3>
-        <div class="app-auth-list available">
-          <article v-for="application in grantableApplications" :key="application.id">
-            <div>
-              <strong>{{ application.applicationName }}（{{ application.applicationCode }}）</strong>
-              <span>{{ application.description || '—' }}</span>
-            </div>
-            <button type="button" class="table-action" @click="openGrantDrawer(application, null)">+ 授权准入</button>
-          </article>
-          <span v-if="grantableApplications.length === 0" class="assignment-empty">没有可授权的应用</span>
-        </div>
+            </article>
+            <span v-if="selectedUserAuthorizations.length === 0" class="assignment-empty">暂无应用授权</span>
+          </div>
+          <h3>可授权应用</h3>
+          <div class="app-auth-list available">
+            <article v-for="application in grantableApplications" :key="application.id">
+              <div>
+                <strong>{{ application.applicationName }}（{{ application.applicationCode }}）</strong>
+                <span>{{ application.description || '—' }}</span>
+              </div>
+              <button type="button" class="table-action" @click="openGrantDrawer(application, null)">+ 授权准入</button>
+            </article>
+            <span v-if="grantableApplications.length === 0" class="assignment-empty">没有可授权的应用</span>
+          </div>
+        </template>
       </div>
     </EntityDrawer>
 
@@ -854,11 +879,12 @@ watch(() => route.query, () => {
         </label>
         <label>
           <span>所属部门</span>
-          <select v-model="createForm.departmentId">
+          <select v-if="canReadDepartmentCatalog" v-model="createForm.departmentId">
             <option value="">未分配部门</option>
             <option v-for="department in departments" :key="department.id" :value="String(department.id)">
               {{ department.name }}（{{ department.code }}）            </option>
           </select>
+          <span v-else class="assignment-empty">当前角色无组织目录访问权限，新建用户将不挂部门。</span>
         </label>
         <footer class="drawer-actions">
           <button class="button-secondary" type="button" :disabled="createPending" @click="closeCreateDrawer">取消</button>

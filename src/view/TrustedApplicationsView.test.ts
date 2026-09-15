@@ -88,12 +88,13 @@ function mountView() {
   return mount(TrustedApplicationsView);
 }
 
-function installBridge(request: ReturnType<typeof vi.fn>) {
+function installBridge(request: ReturnType<typeof vi.fn>, refreshPortalNavigation?: () => Promise<boolean>) {
   applyAdminBridge({
     currentUser: adminUser,
     request: createRuntimeRequest(request),
     refreshCurrentUser: async () => adminUser,
     refreshUnreadCount: async () => undefined,
+    refreshPortalNavigation,
     onUnauthorized: () => undefined
   });
 }
@@ -631,5 +632,68 @@ describe('TrustedApplicationsView', () => {
     expect(closeButton.element).toBeInstanceOf(HTMLButtonElement);
     await closeButton.trigger('click');
     expect(wrapper.find('.operation-notice').exists()).toBe(false);
+  });
+
+  it('门户根节点排序应提交完整快照，保存后重读 Portal 导航', async () => {
+    const snapshot = {
+      version: 7,
+      applications: [
+        { applicationId: 1, applicationCode: 'iam', applicationName: 'IAM 管理台', icon: 'access-control', enabled: true },
+        { applicationId: 2, applicationCode: 'aksk', applicationName: 'AKSK 管理', icon: 'key-round', enabled: true }
+      ]
+    };
+    const refreshPortalNavigation = vi.fn().mockResolvedValue(true);
+    const request = vi.fn((url: string, init?: { method?: string; body?: string }) => {
+      if (url === '/iam/admin/portal/application-order') {
+        return Promise.resolve(init?.method === 'PUT'
+          ? { version: 8, applications: [snapshot.applications[1], snapshot.applications[0]] }
+          : snapshot);
+      }
+      return Promise.resolve(pageBody);
+    });
+    installBridge(request, refreshPortalNavigation);
+
+    const wrapper = mountView();
+    await flushPromises();
+    await clickButton(wrapper, '调整门户顺序');
+    await flushPromises();
+
+    expect(wrapper.findAll('.portal-order-list > li')).toHaveLength(2);
+    await wrapper.get('button[aria-label="下移"]').trigger('click');
+    await clickButton(wrapper, '保存顺序');
+    await flushPromises();
+
+    const updateCall = request.mock.calls.find(([url, init]) =>
+      url === '/iam/admin/portal/application-order' && init?.method === 'PUT');
+    expect(updateCall).toBeTruthy();
+    expect(JSON.parse(updateCall![1]!.body!)).toEqual({ version: 7, applicationIds: [2, 1] });
+    expect(refreshPortalNavigation).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain('Portal 应用顺序已保存并刷新');
+  });
+
+  it('门户根节点排序发生版本冲突时应关闭编辑器并提示重新调整', async () => {
+    const snapshot = {
+      version: 7,
+      applications: [{ applicationId: 1, applicationCode: 'iam', applicationName: 'IAM 管理台', icon: 'access-control', enabled: true }]
+    };
+    const request = vi.fn((url: string, init?: { method?: string }) => {
+      if (url === '/iam/admin/portal/application-order') {
+        return init?.method === 'PUT'
+          ? Promise.reject(Object.assign(new Error('Portal 应用顺序已被其他管理员更新'), { httpStatus: 409 }))
+          : Promise.resolve({ ...snapshot, version: 8 });
+      }
+      return Promise.resolve(pageBody);
+    });
+    installBridge(request);
+
+    const wrapper = mountView();
+    await flushPromises();
+    await clickButton(wrapper, '调整门户顺序');
+    await flushPromises();
+    await clickButton(wrapper, '保存顺序');
+    await flushPromises();
+
+    expect(wrapper.find('.entity-drawer').exists()).toBe(false);
+    expect(wrapper.get('.operation-notice').text()).toContain('Portal 应用顺序已被其他管理员更新，请重新打开后调整');
   });
 });

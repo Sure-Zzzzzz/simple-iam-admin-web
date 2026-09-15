@@ -12,6 +12,7 @@ import {
   deleteTrustedApplication,
   deleteTrustedApplicationClient,
   fetchApplicationPermissionManifest,
+  fetchPortalApplicationOrder,
   fetchPortalLoginLanding,
   fetchResourceVerificationClients,
   fetchTrustedApplication,
@@ -21,6 +22,7 @@ import {
   rotateResourceVerificationClientSecret,
   updateTrustedApplication,
   updateTrustedApplicationPortalConfiguration,
+  updatePortalApplicationOrder,
   updatePortalLoginLanding,
   updateTrustedApplicationClient,
   type ApplicationPermissionManifest,
@@ -32,6 +34,8 @@ import {
   type PortalMenuNodeType,
   type PortalPresentationMode,
   type PortalMenuTreeNode,
+  type PortalApplicationOrder,
+  type PortalApplicationOrderItem,
   type PortalLoginLanding
 } from '../api/iamAuth';
 import { adminState } from '../adminState';
@@ -97,6 +101,20 @@ const manifestForm = reactive({ roles: '', pagePermissions: '', apiPermissions: 
 const manifestResourceText = ref('');
 const manifestSubmitting = ref(false);
 const portalLoginLanding = ref<PortalLoginLanding | null>(null);
+const portalOrderDrawerOpen = ref(false);
+const portalOrderLoading = ref(false);
+const portalOrderSaving = ref(false);
+const portalOrderQuery = ref('');
+const portalApplicationOrder = ref<PortalApplicationOrder | null>(null);
+const portalOrderDraft = ref<PortalApplicationOrderItem[]>([]);
+
+const portalOrderHasQuery = computed(() => Boolean(portalOrderQuery.value.trim()));
+
+function portalOrderMatches(item: PortalApplicationOrderItem) {
+  const keyword = portalOrderQuery.value.trim().toLocaleLowerCase();
+  return !keyword || item.applicationName.toLocaleLowerCase().includes(keyword)
+    || item.applicationCode.toLocaleLowerCase().includes(keyword);
+}
 
 const createForm = reactive({
   applicationCode: '',
@@ -395,6 +413,70 @@ async function loadTrustedApplications() {
     errorMessage.value = error instanceof Error ? error.message : '加载可信应用失败';
   } finally {
     loading.value = false;
+  }
+}
+
+async function openPortalOrderDrawer() {
+  portalOrderDrawerOpen.value = true;
+  portalOrderLoading.value = true;
+  portalOrderQuery.value = '';
+  try {
+    const snapshot = await fetchPortalApplicationOrder();
+    portalApplicationOrder.value = snapshot;
+    portalOrderDraft.value = snapshot.applications.slice();
+  } catch (error) {
+    portalOrderDrawerOpen.value = false;
+    errorMessage.value = error instanceof Error ? error.message : '加载 Portal 应用顺序失败';
+  } finally {
+    portalOrderLoading.value = false;
+  }
+}
+
+function closePortalOrderDrawer() {
+  if (portalOrderSaving.value) return;
+  portalOrderDrawerOpen.value = false;
+  portalOrderQuery.value = '';
+}
+
+function movePortalOrder(index: number, direction: -1 | 1) {
+  const targetIndex = index + direction;
+  if (targetIndex < 0 || targetIndex >= portalOrderDraft.value.length) return;
+  const [moved] = portalOrderDraft.value.splice(index, 1);
+  portalOrderDraft.value.splice(targetIndex, 0, moved);
+}
+
+async function savePortalApplicationOrder() {
+  if (!portalApplicationOrder.value || portalOrderSaving.value) return;
+  portalOrderSaving.value = true;
+  errorMessage.value = '';
+  try {
+    const saved = await updatePortalApplicationOrder({
+      version: portalApplicationOrder.value.version,
+      applicationIds: portalOrderDraft.value.map(item => item.applicationId)
+    });
+    portalApplicationOrder.value = saved;
+    portalOrderDraft.value = saved.applications.slice();
+    portalOrderDrawerOpen.value = false;
+    const refreshed = adminState.bridge?.refreshPortalNavigation
+      ? await adminState.bridge.refreshPortalNavigation()
+      : false;
+    message.value = refreshed ? 'Portal 应用顺序已保存并刷新' : 'Portal 应用顺序已保存，刷新门户后生效';
+  } catch (error) {
+    const status = error instanceof Error ? (error as Error & { httpStatus?: number }).httpStatus : undefined;
+    if (status === 409) {
+      portalOrderDrawerOpen.value = false;
+      try {
+        portalApplicationOrder.value = await fetchPortalApplicationOrder();
+        portalOrderDraft.value = portalApplicationOrder.value.applications.slice();
+      } catch {
+        // 冲突提示仍然有效；重新打开抽屉会再次读取最新快照。
+      }
+      errorMessage.value = 'Portal 应用顺序已被其他管理员更新，请重新打开后调整';
+    } else {
+      errorMessage.value = error instanceof Error ? error.message : '保存 Portal 应用顺序失败';
+    }
+  } finally {
+    portalOrderSaving.value = false;
   }
 }
 
@@ -866,6 +948,10 @@ onMounted(loadTrustedApplications);
           <span class="sr-only">搜索可信应用</span>
           <input v-model="query" type="search" placeholder="搜索编码、名称或描述" @keyup.enter="searchTrustedApplications">
         </label>
+        <button class="button-secondary portal-order-trigger" type="button" @click="openPortalOrderDrawer">
+          <ArrowUp :size="16" aria-hidden="true" />
+          调整门户顺序
+        </button>
       </header>
       <div class="responsive-table">
         <table>
@@ -898,6 +984,57 @@ onMounted(loadTrustedApplications);
         @update:page-size="changePageSize"
       />
     </section>
+
+    <EntityDrawer
+      :open="portalOrderDrawerOpen"
+      :pending="portalOrderSaving"
+      wide
+      title="调整门户应用顺序"
+      description="该顺序对所有用户一致；已隐藏应用仍保留位置，重新启用后回到原位。"
+      @close="closePortalOrderDrawer"
+    >
+      <section class="portal-order-editor" aria-label="Portal 应用全量排序">
+        <label class="search-field portal-order-search">
+          <span class="sr-only">定位门户应用</span>
+          <input v-model="portalOrderQuery" type="search" placeholder="定位应用名称或编码">
+        </label>
+        <p v-if="portalOrderLoading" class="drawer-hint">正在读取当前顺序…</p>
+        <ol v-else class="portal-order-list">
+          <li
+            v-for="(application, index) in portalOrderDraft"
+            :key="application.applicationId"
+            :class="{ 'portal-order-item--muted': portalOrderHasQuery && !portalOrderMatches(application) }"
+          >
+            <span class="portal-order-position" aria-hidden="true">{{ index + 1 }}</span>
+            <span class="trusted-app-icon" :aria-label="trustedApplicationIcon(application.icon).label" role="img">
+              <component :is="trustedApplicationIcon(application.icon).component" :size="18" :stroke-width="2" aria-hidden="true" />
+            </span>
+            <span class="portal-order-identity">
+              <strong>{{ application.applicationName }}</strong>
+              <small>{{ application.applicationCode }}</small>
+            </span>
+            <span class="status-badge" :class="application.enabled ? 'success' : 'neutral'">
+              {{ application.enabled ? '门户可见' : '门户已隐藏' }}
+            </span>
+            <span class="portal-order-actions">
+              <button class="icon-button" type="button" :disabled="portalOrderSaving || index === 0" title="上移" aria-label="上移" @click="movePortalOrder(index, -1)">
+                <ArrowUp :size="16" aria-hidden="true" />
+              </button>
+              <button class="icon-button" type="button" :disabled="portalOrderSaving || index === portalOrderDraft.length - 1" title="下移" aria-label="下移" @click="movePortalOrder(index, 1)">
+                <ArrowDown :size="16" aria-hidden="true" />
+              </button>
+            </span>
+          </li>
+          <li v-if="portalOrderDraft.length === 0" class="assignment-empty">尚未配置 Portal 集成。</li>
+        </ol>
+        <footer class="drawer-actions">
+          <button class="button-secondary" type="button" :disabled="portalOrderSaving" @click="closePortalOrderDrawer">取消</button>
+          <button class="button-primary" type="button" :disabled="portalOrderSaving || portalOrderLoading" @click="savePortalApplicationOrder">
+            {{ portalOrderSaving ? '正在保存…' : '保存顺序' }}
+          </button>
+        </footer>
+      </section>
+    </EntityDrawer>
 
     <EntityDrawer
       :open="createDrawerOpen"

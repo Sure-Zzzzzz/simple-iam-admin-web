@@ -9,6 +9,7 @@ export interface AdminBridge extends RuntimeContext {
   currentUser?: AuthUser | null;
   refreshCurrentUser?: () => Promise<AuthUser | null>;
   refreshUnreadCount?: () => Promise<void>;
+  refreshPortalNavigation?: () => Promise<boolean>;
   onUnauthorized?: () => void;
   theme?: Subscription<ThemeSnapshot>;
 }

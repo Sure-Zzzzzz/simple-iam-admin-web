@@ -362,6 +362,19 @@ export interface PortalLoginLanding {
   version: number;
 }
 
+export interface PortalApplicationOrderItem {
+  applicationId: number;
+  applicationCode: string;
+  applicationName: string;
+  icon: string | null;
+  enabled: boolean;
+}
+
+export interface PortalApplicationOrder {
+  version: number;
+  applications: PortalApplicationOrderItem[];
+}
+
 export interface TrustedApplication {
   id: number;
   applicationCode: string;
@@ -984,6 +997,19 @@ export async function updatePortalLoginLanding(
   payload: { applicationCode: string | null; version: number }
 ): Promise<PortalLoginLanding> {
   return request('/iam/admin/portal/login-landing', {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function fetchPortalApplicationOrder(): Promise<PortalApplicationOrder> {
+  return request('/iam/admin/portal/application-order');
+}
+
+export async function updatePortalApplicationOrder(
+  payload: { version: number; applicationIds: number[] }
+): Promise<PortalApplicationOrder> {
+  return request('/iam/admin/portal/application-order', {
     method: 'PUT',
     body: JSON.stringify(payload)
   });

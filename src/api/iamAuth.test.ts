@@ -19,6 +19,7 @@ import {
   fetchActiveSessions,
   fetchAdminDashboard,
   fetchApplicationPermissionManifest,
+  fetchPortalApplicationOrder,
   fetchDashboardRecentLogins,
   fetchTrustedApplication,
   fetchTrustedApplicationClients,
@@ -46,6 +47,7 @@ import {
   updateTrustedApplication,
   updateTrustedApplicationClient,
   updateDepartment,
+  updatePortalApplicationOrder,
   updateUserGroup
 } from './iamAuth';
 
@@ -377,6 +379,24 @@ describe('admin iamAuth api', () => {
 
     await fetchTrustedApplication(7);
     expect(bridge).toHaveBeenCalledWith('/iam/admin/trusted-applications/7', {});
+  });
+
+  it('Portal 应用全局顺序应读取快照并提交版本化完整集合', async () => {
+    const snapshot = {
+      version: 4,
+      applications: [{ applicationId: 1, applicationCode: 'iam', applicationName: 'IAM 管理台', icon: 'access-control', enabled: true }]
+    };
+    const bridge = vi.fn().mockResolvedValue(snapshot);
+    setAdminRequestBridge(bridge);
+
+    await expect(fetchPortalApplicationOrder()).resolves.toEqual(snapshot);
+    await expect(updatePortalApplicationOrder({ version: 4, applicationIds: [1] })).resolves.toEqual(snapshot);
+
+    expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/portal/application-order', {});
+    expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/portal/application-order', {
+      method: 'PUT',
+      body: JSON.stringify({ version: 4, applicationIds: [1] })
+    });
   });
 
   it('仪表盘聚合、最近登录分页、会话查询与强制下线应调用对应管理端接口', async () => {

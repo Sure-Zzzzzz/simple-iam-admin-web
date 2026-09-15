@@ -410,6 +410,19 @@ button.dashboard-card:hover { border-color:var(--iam-primary); }
 .icon-choice:hover,
 .icon-choice.selected { background:var(--iam-surface-soft); border-color:var(--iam-primary); }
 .trusted-app-icon { align-items:center; background:var(--iam-surface-soft); border-radius:var(--iam-radius-control); color:var(--iam-primary); display:inline-flex; height:34px; justify-content:center; width:34px; }
+.portal-order-trigger { align-items:center; display:inline-flex; flex:0 0 auto; gap:7px; white-space:nowrap; }
+.portal-order-editor { display:grid; gap:14px; }
+.portal-order-search { display:block; }
+.portal-order-search input { width:100%; }
+.portal-order-list { display:grid; gap:7px; list-style:none; margin:0; padding:0; }
+.portal-order-list > li:not(.assignment-empty) { align-items:center; background:var(--iam-surface-soft); border:1px solid var(--iam-border); border-radius:var(--iam-radius-control); display:grid; gap:10px; grid-template-columns:30px 34px minmax(0, 1fr) auto auto; min-height:58px; padding:8px 10px; }
+.portal-order-position { align-items:center; color:var(--iam-muted); display:inline-flex; font-size:12px; font-variant-numeric:tabular-nums; font-weight:800; justify-content:center; width:30px; }
+.portal-order-identity { display:grid; gap:2px; min-width:0; }
+.portal-order-identity strong { font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.portal-order-identity small { color:var(--iam-muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.portal-order-actions { display:flex; gap:5px; }
+.portal-order-actions .icon-button { height:32px; width:32px; }
+.portal-order-item--muted { opacity:.42; }
 .inline-actions { display:flex; gap:6px; }
 .secret-notice { align-items:flex-start; display:flex; gap:16px; justify-content:space-between; }
 .secret-notice strong,
@@ -529,6 +542,10 @@ button.dashboard-card:hover { border-color:var(--iam-primary); }
   .menu-tree-navigator { border-bottom:1px solid var(--iam-border); border-right:0; max-height:260px; }
   .menu-editor-fields { grid-template-columns:1fr; }
   .icon-picker > div { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+  .portal-order-trigger { justify-content:center; width:100%; }
+  .portal-order-list > li:not(.assignment-empty) { grid-template-columns:30px 34px minmax(0, 1fr) auto; }
+  .portal-order-list .status-badge { grid-column:3 / 4; justify-self:start; }
+  .portal-order-actions { grid-column:4 / 5; grid-row:1 / 3; }
   .secret-notice,
   .dashboard-error { align-items:stretch; flex-direction:column; }
 }

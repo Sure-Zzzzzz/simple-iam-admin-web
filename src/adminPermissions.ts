@@ -15,7 +15,9 @@ export interface AdminNavItem {
 }
 
 export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
-  { to: '/', label: '仪表盘' },
+  // 仪表盘数据要 iam:dashboard:api；未持有 dashboard:page 的部分权限用户
+  // 仍看不到本入口（与 ADMIN_CONSOLE_ENTRANCE_AUTHORITIES 门数组保持同步）
+  { to: '/', label: '仪表盘', permission: 'iam:dashboard:page' },
   { to: '/users', label: '用户管理', permission: 'iam:user:page' },
   { to: '/organizations', label: '组织与成员', permission: 'iam:department:page' },
   { to: '/user-groups', label: '协作组管理', permission: 'iam:user-group:page' },
@@ -44,8 +46,7 @@ export function canEnterAdminConsole(user: AuthUser | null): boolean {
   return user.admin || ADMIN_NAV_ITEMS.some(item => item.permission && user.authorities.includes(item.permission));
 }
 
-// 非 admin 过滤掉无 permission 的导航项（仪表盘）：其数据要 iam:dashboard:api，
-// 部分权限用户直敲首页会被守卫重定向，导航也不该露出该入口
+// 非 admin 只显示实际持有页面权限的导航项；仪表盘入口同样按 iam:dashboard:page 过滤
 export function visibleNavItems(user: AuthUser | null): AdminNavItem[] {
   if (!user) {
     return [];

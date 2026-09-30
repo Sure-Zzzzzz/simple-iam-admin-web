@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test';
 
-const user = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const user = { subjectId: 'sid-admin', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const rootDepartment = { id: 10, code: 'headquarters', name: '总部', parentId: null, status: 1, sortOrder: 0 };
 const childDepartment = { id: 11, code: 'research', name: '研发部', parentId: 10, status: 1, sortOrder: 0 };
-const alice = { id: 2, username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '总部', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
-const bob = { id: 3, username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
+const alice = { subjectId: 'sid-alice', username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '总部', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
+const bob = { subjectId: 'sid-bob', username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
 const noticeGroup = { id: 3, code: 'notice', name: '通知组', description: '', status: 1, createdAt: '', updatedAt: '' };
 const opsGroup = { id: 7, code: 'ops', name: '运维组', description: '', status: 1, createdAt: '', updatedAt: '' };
 const operatorRole = { id: 4, code: 'operator', name: '运营角色', description: '', builtIn: 0 };
@@ -33,6 +33,8 @@ async function mockShell(page) {
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
   await page.route('**/iam/web/auth/providers', route => route.fulfill({ json: { providers: [] } }));
   await page.route('**/iam/admin/users?**', route => route.fulfill({ json: { content: [alice, bob], totalElements: 2, totalPages: 1, number: 0, size: 100 } }));
+  await page.route('**/iam/admin/users/*/roles', route => route.fulfill({ json: [] }));
+  await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: { content: [], totalElements: 0, totalPages: 0, page: 1, size: 100, numberOfElements: 0, first: true, last: true, empty: true } }));
 }
 
 async function mockWorkspaceBase(page, workspace = makeWorkspace()) {
@@ -158,27 +160,28 @@ test('成员筛选与分页应携带查询参数并展示页码', async ({ page 
   const filterBar = page.locator('.user-filter-bar');
   await filterBar.locator('input[type="search"]').fill('alice');
   await filterBar.locator('input[type="search"]').press('Enter');
+  await expect.poll(() => workspaceUrls.at(-1) || '').toContain('keyword=alice');
   await expect(page.locator('.pagination button.active')).toHaveText('1');
-  expect(workspaceUrls.at(-1)).toContain('keyword=alice');
 
-  await filterBar.locator('select').selectOption('1');
+  await filterBar.getByRole('button', { name: '成员状态筛选' }).click();
+  await page.getByRole('option', { name: '启用', exact: true }).click();
+  await expect.poll(() => workspaceUrls.at(-1) || '').toContain('page=1');
+  await expect.poll(() => workspaceUrls.at(-1) || '').toContain('status=1');
+  await expect.poll(() => workspaceUrls.at(-1) || '').toContain('keyword=alice');
   await expect(page.locator('.pagination button.active')).toHaveText('1');
-  expect(workspaceUrls.at(-1)).toContain('page=1');
-  expect(workspaceUrls.at(-1)).toContain('status=1');
-  expect(workspaceUrls.at(-1)).toContain('keyword=alice');
 
   await page.getByRole('button', { name: '下一页' }).click();
+  await expect.poll(() => workspaceUrls.at(-1) || '').toContain('page=2');
   await expect(page.locator('.pagination button.active')).toHaveText('2');
-  expect(workspaceUrls.at(-1)).toContain('page=2');
 });
 
 test('成员画像可维护部门归属与协作组角色关系', async ({ page }) => {
   await mockShell(page);
   await mockWorkspaceBase(page);
   const state = { profile: makeProfile() };
-  await page.route('**/iam/admin/organizations/users/2/profile', route => route.fulfill({ json: state.profile }));
+  await page.route('**/iam/admin/organizations/users/sid-alice/profile', route => route.fulfill({ json: state.profile }));
   const operations: string[] = [];
-  await page.route('**/iam/admin/user-groups/*/users/2', route => {
+  await page.route('**/iam/admin/user-groups/*/users/sid-alice', route => {
     const groupId = Number(route.request().url().match(/user-groups\/(\d+)/)![1]);
     if (route.request().method() === 'POST') {
       operations.push(`POST user-group ${groupId}`);
@@ -189,7 +192,7 @@ test('成员画像可维护部门归属与协作组角色关系', async ({ page 
     }
     return route.fulfill({ json: {} });
   });
-  await page.route('**/iam/admin/users/2/roles/*', route => {
+  await page.route('**/iam/admin/users/sid-alice/roles/*', route => {
     const roleId = Number(route.request().url().match(/roles\/(\d+)/)![1]);
     if (route.request().method() === 'POST') {
       operations.push(`POST role ${roleId}`);
@@ -201,7 +204,7 @@ test('成员画像可维护部门归属与协作组角色关系', async ({ page 
     return route.fulfill({ json: {} });
   });
   let userPutBody = null;
-  await page.route('**/iam/admin/users/2', route => {
+  await page.route('**/iam/admin/users/sid-alice', route => {
     if (route.request().method() === 'PUT') {
       userPutBody = route.request().postDataJSON();
       return route.fulfill({ json: { ...alice, departmentId: userPutBody.departmentId, departmentName: '研发部' } });
@@ -214,7 +217,8 @@ test('成员画像可维护部门归属与协作组角色关系', async ({ page 
   const drawer = page.locator('.entity-drawer');
   await expect(drawer).toContainText('爱丽丝');
 
-  await drawer.locator('select').selectOption('11');
+  await drawer.getByRole('button', { name: '所属部门' }).click();
+  await page.getByRole('option', { name: '研发部', exact: true }).click();
   await drawer.getByRole('button', { name: '保存成员资料' }).click();
   await expect(page.getByText('成员资料与所属部门已更新')).toBeVisible();
   expect(userPutBody).toMatchObject({ departmentId: 11, clearDepartment: false });
@@ -240,7 +244,7 @@ test('成员画像可维护部门归属与协作组角色关系', async ({ page 
 test('画像有效权限只读并可跳转用户管理', async ({ page }) => {
   await mockShell(page);
   await mockWorkspaceBase(page);
-  await page.route('**/iam/admin/organizations/users/2/profile', route => route.fulfill({ json: makeProfile() }));
+  await page.route('**/iam/admin/organizations/users/sid-alice/profile', route => route.fulfill({ json: makeProfile() }));
 
   await page.goto('/app/iam/organizations');
   await page.locator('tbody button').first().click();
@@ -259,7 +263,7 @@ test('添加已有成员应把未分配用户挂到当前部门', async ({ page 
   await mockShell(page);
   await mockWorkspaceBase(page);
   let putBody = null;
-  await page.route('**/iam/admin/users/3', route => {
+  await page.route('**/iam/admin/users/sid-bob', route => {
     if (route.request().method() === 'PUT') {
       putBody = route.request().postDataJSON();
       return route.fulfill({ json: { ...bob, departmentId: 10, departmentName: '总部' } });
@@ -286,7 +290,7 @@ test('移除成员应清空归属且不影响账号', async ({ page }) => {
   await mockShell(page);
   await mockWorkspaceBase(page);
   let putBody = null;
-  await page.route('**/iam/admin/users/2', route => {
+  await page.route('**/iam/admin/users/sid-alice', route => {
     if (route.request().method() === 'PUT') {
       putBody = route.request().postDataJSON();
       return route.fulfill({ json: { ...alice, departmentId: null, departmentName: null } });

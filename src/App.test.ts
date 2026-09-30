@@ -2,14 +2,14 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { createRouter, createWebHistory } from 'vue-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.vue';
-import { fetchCurrentUser } from './api/iamAuth';
+import { fetchCurrentUser, importUsers } from './api/iamAuth';
 import { applyAdminBridge, adminState, createRuntimeRequest } from './adminState';
 
 vi.mock('./api/iamAuth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api/iamAuth')>();
   return {
     ...actual,
-    fetchCurrentUser: vi.fn().mockResolvedValue({ userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] })
+    fetchCurrentUser: vi.fn().mockResolvedValue({ subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] })
   };
 });
 
@@ -45,9 +45,9 @@ describe('Admin App', () => {
 
   it('作为 IAM 子应用不重复展示 Portal 已承担的模块导航', async () => {
     applyAdminBridge({
-      currentUser: { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] },
+      currentUser: { subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] },
       request: createRuntimeRequest(async <T>() => undefined as T),
-      refreshCurrentUser: async () => ({ userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] }),
+      refreshCurrentUser: async () => ({ subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] }),
       refreshUnreadCount: async () => undefined,
       onUnauthorized: () => undefined
     });
@@ -76,9 +76,9 @@ describe('Admin App', () => {
 
   it('非管理员进入 IAM 子应用应展示无权限状态', async () => {
     applyAdminBridge({
-      currentUser: { userId: 2, username: 'user', displayName: '普通用户', admin: false, authorities: ['ROLE_iam_user'] },
+      currentUser: { subjectId: 'sid-2', username: 'user', displayName: '普通用户', admin: false, authorities: ['ROLE_iam_user'] },
       request: createRuntimeRequest(async <T>() => undefined as T),
-      refreshCurrentUser: async () => ({ userId: 2, username: 'user', displayName: '普通用户', admin: false, authorities: ['ROLE_iam_user'] }),
+      refreshCurrentUser: async () => ({ subjectId: 'sid-2', username: 'user', displayName: '普通用户', admin: false, authorities: ['ROLE_iam_user'] }),
       refreshUnreadCount: async () => undefined,
       onUnauthorized: () => undefined
     });
@@ -88,11 +88,37 @@ describe('Admin App', () => {
 
     expect(wrapper.text()).toContain('当前账号没有统一身份与访问管理权限');
     expect(wrapper.text()).not.toContain('dashboard');
+    // 无权限态必须自带出路：嵌入式给返回门户，任何形态都给退出登录
+    expect(wrapper.find('.admin-blocked-secondary').exists()).toBe(true);
+    expect(wrapper.find('.admin-blocked-danger').exists()).toBe(true);
+    expect(wrapper.text()).toContain('返回门户');
+    expect(wrapper.text()).toContain('退出登录');
+  });
+
+  it('嵌入式请求桥应原样传递用户导入 multipart 表单', async () => {
+    const request = vi.fn().mockResolvedValue({ createdRows: 1 });
+    const file = new File(['template'], 'user-import-template.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    applyAdminBridge({
+      currentUser: { subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] },
+      request: { request }
+    });
+
+    await importUsers(file);
+
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'POST',
+      path: '/iam/admin/users/import',
+      body: expect.any(FormData)
+    }));
+    const form = request.mock.calls[0][0].body as FormData;
+    expect(form.get('file')).toBe(file);
   });
 
   it('持页面权限码的委派用户：导航只留有权模块，页面正常渲染', async () => {
     vi.mocked(fetchCurrentUser).mockResolvedValueOnce({
-      userId: 3, username: 'useradmin', displayName: '用户管理员', admin: false,
+      subjectId: 'sid-3', username: 'useradmin', displayName: '用户管理员', admin: false,
       authorities: ['ROLE_iam_user', 'iam:user:page', 'iam:user:api']
     });
 

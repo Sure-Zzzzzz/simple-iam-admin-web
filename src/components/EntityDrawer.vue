@@ -57,7 +57,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
           <h2>{{ title }}</h2>
           <p v-if="description">{{ description }}</p>
         </div>
-        <button class="icon-button" type="button" :disabled="pending" @click="close">
+        <button class="icon-button" type="button" aria-label="关闭" title="关闭" :disabled="pending" @click="close">
           &times;
         </button>
       </header>

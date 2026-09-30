@@ -2,8 +2,9 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyAdminBridge, createRuntimeRequest } from '../adminState';
 import TrustedApplicationsView from './TrustedApplicationsView.vue';
+import { formSelectDisplay, pickFormSelectOption } from './formSelectDriver';
 
-const adminUser = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const adminUser = { subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const trustedApplications = [{
   id: 1,
   applicationCode: 'demo',
@@ -64,6 +65,11 @@ const resourceVerificationClients = [{
   updatedAt: '2026-08-31T08:00:00Z',
   revokedAt: null
 }];
+const ownerInheritance = {
+  applicationId: 1,
+  enabled: false,
+  applicationAuthorizationEpoch: 2
+};
 const permissionManifest = {
   applicationId: 1,
   roles: ['app-admin'],
@@ -118,6 +124,12 @@ function createRequestMock() {
     }
     if (url === '/iam/admin/trusted-applications/1/resource-verification-clients') {
       return Promise.resolve(resourceVerificationClients);
+    }
+    if (url === '/iam/admin/trusted-applications/1/owner-inheritance') {
+      return Promise.resolve(ownerInheritance);
+    }
+    if (url === '/iam/admin/trusted-applications/1/owner-inheritance?enabled=true' && init?.method === 'PUT') {
+      return Promise.resolve({ ...ownerInheritance, enabled: true, applicationAuthorizationEpoch: 3 });
     }
     if (url.endsWith('/permission-manifest') && init?.method === 'PUT') {
       return Promise.resolve({ ...permissionManifest, manifestVersion: 3 });
@@ -174,7 +186,7 @@ describe('TrustedApplicationsView', () => {
     await clickButton(wrapper, '新建可信应用');
 
     const form = wrapper.get('form.drawer-form');
-    const inputs = form.findAll('input');
+    const inputs = form.findAll('input:not([type="checkbox"])');
     await inputs[0].setValue('workflow');
     await inputs[1].setValue('流程中心');
     await inputs[2].setValue('workflow-web');
@@ -223,13 +235,13 @@ describe('TrustedApplicationsView', () => {
     await clickButton(wrapper, '新建可信应用');
 
     const form = wrapper.get('form.drawer-form');
-    const inputs = form.findAll('input');
+    const inputs = form.findAll('input:not([type="checkbox"])');
     await inputs[0].setValue('workflow');
     await inputs[1].setValue('流程中心');
     await inputs[2].setValue('workflow-web');
     await inputs[3].setValue('流程中心 Web 端');
     await inputs[4].setValue('openid profile');
-    await form.findAll('select')[1].setValue('PUBLIC');
+    await pickFormSelectOption(wrapper, { ariaLabel: '客户端类型' }, '公共客户端（浏览器/原生应用）');
     await form.findAll('textarea')[1].setValue('https://a.example.com/cb');
     await form.trigger('submit');
     await flushPromises();
@@ -254,6 +266,7 @@ describe('TrustedApplicationsView', () => {
 
     expect(request).toHaveBeenCalledWith('/iam/admin/trusted-applications/1', {});
     expect(request).toHaveBeenCalledWith('/iam/admin/trusted-applications/1/resource-verification-clients', {});
+    expect(request).toHaveBeenCalledWith('/iam/admin/trusted-applications/1/owner-inheritance', {});
     expect(request).toHaveBeenCalledWith('/iam/admin/trusted-applications/1/permission-manifest', {});
     const text = wrapper.text();
     expect(text).toContain('基本资料');
@@ -263,10 +276,31 @@ describe('TrustedApplicationsView', () => {
     expect(text).toContain('demo-web');
     expect(text).toContain('门户路由前缀：/app/demo');
     expect(text).toContain('资源校验客户端');
+    expect(text).toContain('AKU 所属人授权继承');
+    expect(text).toContain('已关闭');
     expect(text).toContain('demo-resource');
     expect(text).toContain('生效中');
     expect(text).toContain('添加客户端');
     expect(text).toContain('删除可信应用');
+  });
+
+  it('AKU 所属人授权继承应单独保存并回显新的授权纪元', async () => {
+    const request = createRequestMock();
+    installBridge(request);
+
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('.table-primary-action').trigger('click');
+    await flushPromises();
+
+    const toggle = wrapper.get('.owner-inheritance-toggle input');
+    await toggle.setValue(true);
+    await wrapper.get('.owner-inheritance-meta button').trigger('click');
+    await flushPromises();
+
+    expect(request).toHaveBeenCalledWith('/iam/admin/trusted-applications/1/owner-inheritance?enabled=true', { method: 'PUT' });
+    expect(wrapper.text()).toContain('AKU 所属人授权继承已开启');
+    expect(wrapper.get('.owner-inheritance-section').text()).toContain('v3');
   });
 
   it('权限清单申报应回显当前版本并整表提交三类码', async () => {
@@ -443,7 +477,7 @@ describe('TrustedApplicationsView', () => {
 
     const forms = wrapper.findAll('form.drawer-form');
     const form = forms[forms.length - 1];
-    const inputs = form.findAll('input');
+    const inputs = form.findAll('input:not([type="checkbox"])');
     await inputs[0].setValue('workflow-web');
     await inputs[1].setValue('流程中心 Web 端');
     await inputs[2].setValue('openid');
@@ -484,7 +518,7 @@ describe('TrustedApplicationsView', () => {
     const existingNodes = wrapper.findAll('.menu-tree-node');
     expect(existingNodes).toHaveLength(1);
     expect(existingNodes[0].attributes('aria-current')).toBe('true');
-    expect((wrapper.get('.menu-node-editor select').element as HTMLSelectElement).value).toBe('PAGE');
+    expect(formSelectDisplay(wrapper, { ariaLabel: '节点类型' })).toBe('页面');
     expect((wrapper.get('.menu-node-editor').findAll('input')[1].element as HTMLInputElement).value).toBe('工作台');
 
     await clickButton(wrapper, '新增根级页面');
@@ -526,7 +560,7 @@ describe('TrustedApplicationsView', () => {
     await flushPromises();
     await wrapper.get('.table-primary-action').trigger('click');
     await flushPromises();
-    await wrapper.get('select[aria-label="门户展示"]').setValue('IMMERSIVE');
+    await pickFormSelectOption(wrapper, { ariaLabel: '门户展示' }, '沉浸展示（隐藏 Portal 顶栏和左侧栏）');
     await wrapper.get('form.drawer-form').trigger('submit');
     await flushPromises();
 
@@ -556,7 +590,7 @@ describe('TrustedApplicationsView', () => {
     await flushPromises();
     await wrapper.get('.table-primary-action').trigger('click');
     await flushPromises();
-    await wrapper.get('select[aria-label="默认页面"]').setValue('workspace');
+    await pickFormSelectOption(wrapper, { ariaLabel: '默认页面' }, '工作台 · /workspace');
     await wrapper.get('.portal-default-entry input').setValue('/workspace/overview');
     await wrapper.get('.portal-login-landing-field input').setValue(true);
     await wrapper.get('form.drawer-form').trigger('submit');

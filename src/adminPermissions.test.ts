@@ -12,7 +12,7 @@ import {
 } from './adminPermissions';
 
 function userWith(authorities: string[], admin = false): AuthUser {
-  return { userId: 2, username: 'delegate', displayName: '委派用户', admin, authorities };
+  return { subjectId: 'sid-2', username: 'delegate', displayName: '委派用户', admin, authorities };
 }
 
 const USER_ADMIN = userWith(['ROLE_iam_user', 'iam:user:page', 'iam:user:api']);
@@ -42,6 +42,8 @@ describe('adminPermissions 纯函数', () => {
     expect(canEnterAdminConsole(API_ONLY)).toBe(false);
     expect(canEnterAdminConsole(PLAIN_USER)).toBe(false);
     expect(canEnterAdminConsole(null)).toBe(false);
+    // 与服务端 ADMIN_CONSOLE_ENTRANCE_AUTHORITIES 门数组同步：仅仪表盘页面码也能进台
+    expect(canEnterAdminConsole(userWith(['iam:dashboard:page']))).toBe(true);
   });
 
   it('visibleNavItems：admin 全量、页面码用户只留有权项、无码为空', () => {

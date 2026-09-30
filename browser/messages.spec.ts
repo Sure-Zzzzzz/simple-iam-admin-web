@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const user = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const user = { subjectId: 'sid-admin', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const providers = { providers: [
   { code: 'local-password', displayName: '本地登录', type: 'local', enabled: true, description: null }
 ] };
@@ -12,7 +12,7 @@ const userGroups = [
 ];
 const usersPage = {
   content: [
-    { id: 2, username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
+    { subjectId: 'sid-alice', username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
   ],
   totalElements: 1, totalPages: 1, page: 1, size: 20, numberOfElements: 1, first: true, last: true, empty: false
 };
@@ -25,8 +25,8 @@ const batchesPage = { content: [batchSummary], totalElements: 1, totalPages: 1, 
 const batchDetail = { ...batchSummary, content: '今晚 22 点系统维护，预计 1 小时。' };
 const recipientsPage = {
   content: [
-    { userId: 2, username: 'alice', displayName: '爱丽丝', readAt: '2026-08-31T11:00:00Z' },
-    { userId: 5, username: 'bob', displayName: '鲍勃', readAt: null }
+    { subjectId: 'sid-alice', username: 'alice', displayName: '爱丽丝', readAt: '2026-08-31T11:00:00Z' },
+    { subjectId: 'sid-bob', username: 'bob', displayName: '鲍勃', readAt: null }
   ],
   totalElements: 2, totalPages: 1, page: 1, size: 20, numberOfElements: 2, first: true, last: true, empty: false
 };
@@ -37,8 +37,8 @@ const newBatchDetail = {
 };
 const newRecipientsPage = {
   content: [
-    { userId: 2, username: 'alice', displayName: '爱丽丝', readAt: null },
-    { userId: 5, username: 'bob', displayName: '鲍勃', readAt: null }
+    { subjectId: 'sid-alice', username: 'alice', displayName: '爱丽丝', readAt: null },
+    { subjectId: 'sid-bob', username: 'bob', displayName: '鲍勃', readAt: null }
   ],
   totalElements: 2, totalPages: 1, page: 1, size: 20, numberOfElements: 2, first: true, last: true, empty: false
 };
@@ -98,7 +98,7 @@ test('按协作组发送应经确认汇总并打开刚发批次详情', async ({
 
   await expect(page.getByText('站内信已发送给 2 位用户')).toBeVisible();
   expect(getSentBody()).toEqual({
-    recipientUserIds: [], departmentIds: [], userGroupIds: [4], includeChildDepartments: false, title: '群发通知', content: '通知内容'
+    recipientSubjectIds: [], departmentIds: [], userGroupIds: [4], includeChildDepartments: false, title: '群发通知', content: '通知内容'
   });
   await expect(page.locator('.entity-drawer')).toContainText('新批次发送内容');
   await expect(page.locator('.entity-drawer')).toContainText('收件人（2）');

@@ -5,6 +5,7 @@ import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import DashboardIcon from '../components/DashboardIcon.vue';
 import EntityDrawer from '../components/EntityDrawer.vue';
+import FormSelect, { type FormSelectOption } from '@sure-zzzzzz/simple-iam-theme-contract/FormSelect';
 import Pagination from '@sure-zzzzzz/simple-iam-theme-contract/Pagination';
 import {
   assignDepartmentRole,
@@ -54,7 +55,7 @@ const departmentDrawerOpen = ref(false);
 const departmentDrawerMode = ref<'root' | 'child'>('child');
 const memberDrawerOpen = ref(false);
 const addMemberDrawerOpen = ref(false);
-const addMemberSelectedIds = ref<Set<number>>(new Set());
+const addMemberSelectedIds = ref<Set<string>>(new Set());
 const removeMemberTarget = ref<IamUser | null>(null);
 const removeMemberPending = ref(false);
 const profileDrawerOpen = ref(false);
@@ -75,7 +76,7 @@ const pickerKeyword = ref('');
 const departmentForm = reactive({ id: '', name: '' });
 const bindableUsers = ref<IamUser[]>([]);
 const memberOptionsLoading = ref(false);
-const selectedMemberIds = ref<Set<number>>(new Set());
+const selectedMemberIds = ref<Set<string>>(new Set());
 
 const treeSearchKeyword = ref('');
 const treeRows = computed<TreeRow[]>(() => {
@@ -143,17 +144,35 @@ const editableParentDepartments = computed(() => {
   return departments.value.filter(department => !excluded.has(department.id));
 });
 
+const memberStatusOptions: FormSelectOption[] = [
+  { label: '全部状态', value: '' },
+  { label: '启用', value: '1' },
+  { label: '停用', value: '0' }
+];
+const parentDepartmentOptions = computed<FormSelectOption[]>(() => [
+  { label: '未分配（作为根部门）', value: '' },
+  ...editableParentDepartments.value.map(department => ({ label: department.name, value: String(department.id) }))
+]);
+const departmentStatusOptions: FormSelectOption[] = [
+  { label: '启用', value: 1 },
+  { label: '停用', value: 0 }
+];
+const profileDepartmentOptions = computed<FormSelectOption[]>(() => [
+  { label: '未分配部门', value: '' },
+  ...departments.value.map(department => ({ label: department.name, value: String(department.id) }))
+]);
+
 function resetChildDepartmentForm() {
   Object.assign(createDepartmentForm, { code: '', name: '', sortOrder: 0 });
   selectedMemberIds.value = new Set();
 }
 
-function toggleMember(userId: number) {
+function toggleMember(subjectId: string) {
   const next = new Set(selectedMemberIds.value);
-  if (next.has(userId)) {
-    next.delete(userId);
+  if (next.has(subjectId)) {
+    next.delete(subjectId);
   } else {
-    next.add(userId);
+    next.add(subjectId);
   }
   selectedMemberIds.value = next;
 }
@@ -260,7 +279,7 @@ async function createChildDepartment() {
       parentId: departmentDrawerMode.value === 'root' ? null : selectedDepartmentId.value,
       sortOrder: createDepartmentForm.sortOrder,
       status: 1,
-      memberIds: [...selectedMemberIds.value]
+      memberSubjectIds: [...selectedMemberIds.value]
     });
     departmentDrawerOpen.value = false;
     resetChildDepartmentForm();
@@ -372,7 +391,7 @@ async function openUserProfile(user: IamUser) {
   loading.value = true;
   errorMessage.value = '';
   try {
-    profile.value = await fetchOrganizationUserProfile(user.id);
+    profile.value = await fetchOrganizationUserProfile(user.subjectId);
     departmentForm.id = profile.value.user.departmentId ? String(profile.value.user.departmentId) : '';
     departmentForm.name = profile.value.user.displayName || '';
     profileDrawerOpen.value = true;
@@ -390,7 +409,7 @@ async function updateUserDepartment() {
   errorMessage.value = '';
   try {
     const departmentId = Number(departmentForm.id);
-    await updateUser(profile.value.user.id, {
+    await updateUser(profile.value.user.subjectId, {
       displayName: departmentForm.name,
       email: profile.value.user.email || '',
       phone: profile.value.user.phone || '',
@@ -399,7 +418,7 @@ async function updateUserDepartment() {
     });
     message.value = '成员资料与所属部门已更新';
     await refresh();
-    profile.value = await fetchOrganizationUserProfile(profile.value.user.id);
+    profile.value = await fetchOrganizationUserProfile(profile.value.user.subjectId);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '更新成员归属失败';
   } finally {
@@ -416,9 +435,9 @@ function openAddMemberDrawer() {
 
 function closeAddMemberDrawer() { if (!submitting.value) { addMemberDrawerOpen.value = false; } }
 
-function toggleAddMember(userId: number) {
+function toggleAddMember(subjectId: string) {
   const next = new Set(addMemberSelectedIds.value);
-  if (next.has(userId)) { next.delete(userId); } else { next.add(userId); }
+  if (next.has(subjectId)) { next.delete(subjectId); } else { next.add(subjectId); }
   addMemberSelectedIds.value = next;
 }
 
@@ -429,9 +448,9 @@ async function addSelectedMembers() {
   message.value = '';
   errorMessage.value = '';
   try {
-    const targets = bindableUsers.value.filter(user => addMemberSelectedIds.value.has(user.id));
+    const targets = bindableUsers.value.filter(user => addMemberSelectedIds.value.has(user.subjectId));
     for (const user of targets) {
-      await updateUser(user.id, {
+      await updateUser(user.subjectId, {
         displayName: user.displayName || '',
         email: user.email || '',
         phone: user.phone || '',
@@ -456,7 +475,7 @@ async function confirmRemoveMember() {
   message.value = '';
   errorMessage.value = '';
   try {
-    await updateUser(target.id, {
+    await updateUser(target.subjectId, {
       displayName: target.displayName || '',
       email: target.email || '',
       phone: target.phone || '',
@@ -477,8 +496,8 @@ async function confirmRemoveMember() {
 async function addUserGroup(groupId: number) {
   if (!profile.value) return;
   try {
-    await assignUserGroupUser(groupId, profile.value.user.id);
-    profile.value = await fetchOrganizationUserProfile(profile.value.user.id);
+    await assignUserGroupUser(groupId, profile.value.user.subjectId);
+    profile.value = await fetchOrganizationUserProfile(profile.value.user.subjectId);
     message.value = '成员已加入协作组';
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : ''; }
 }
@@ -486,8 +505,8 @@ async function addUserGroup(groupId: number) {
 async function addRole(roleId: number) {
   if (!profile.value) return;
   try {
-    await assignUserRole(profile.value.user.id, roleId);
-    profile.value = await fetchOrganizationUserProfile(profile.value.user.id);
+    await assignUserRole(profile.value.user.subjectId, roleId);
+    profile.value = await fetchOrganizationUserProfile(profile.value.user.subjectId);
     message.value = '直接角色已分配';
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '分配角色失败'; }
 }
@@ -514,13 +533,13 @@ async function confirmRemoveRelationship() {
   errorMessage.value = '';
   try {
     if (target.type === 'group') {
-      await revokeUserGroupUser(target.id, profile.value!.user.id);
+      await revokeUserGroupUser(target.id, profile.value!.user.subjectId);
       message.value = '成员已移出协作组';
-      profile.value = await fetchOrganizationUserProfile(profile.value!.user.id);
+      profile.value = await fetchOrganizationUserProfile(profile.value!.user.subjectId);
     } else if (target.type === 'role') {
-      await revokeUserRole(profile.value!.user.id, target.id);
+      await revokeUserRole(profile.value!.user.subjectId, target.id);
       message.value = '成员的直接角色已移除，有效权限会相应变化';
-      profile.value = await fetchOrganizationUserProfile(profile.value!.user.id);
+      profile.value = await fetchOrganizationUserProfile(profile.value!.user.subjectId);
     } else {
       if (!selectedDepartmentId.value) throw new Error('未选中部门');
       await revokeDepartmentRole(selectedDepartmentId.value, target.id);
@@ -554,21 +573,21 @@ onMounted(loadInitialData);
 
         <section class="admin-data-surface"><header class="data-toolbar"><div><h2>直属子部门 <span>{{ workspace.directChildren.length }}</span></h2><p>这里仅展示当前部门的直接下级。</p></div></header><div v-if="workspace.directChildren.length" class="child-department-list"><button v-for="department in workspace.directChildren" :key="department.id" type="button" @click="selectDepartment(department.id)"><strong>{{ department.name }}</strong><span>{{ department.code }} · {{ department.status === 1 ? '启用' : '停用' }}</span></button></div><div v-else class="table-empty">暂无直属子部门。</div></section>
 
-        <section class="admin-data-surface"><header class="data-toolbar"><div><h2>直属成员 <span>{{ workspace.members.totalElements }}</span></h2><p>成员详情中可维护部门、协作组和直接角色。</p></div><div class="admin-page-actions"><button class="button-secondary" type="button" @click="openAddMemberDrawer">添加成员</button></div></header><div class="data-toolbar user-filter-bar member-filter-bar"><input v-model="memberQuery.keyword" type="search" placeholder="搜索用户名 / 显示名" @keyup.enter="resetMemberPageAndLoad"><select v-model="memberQuery.status" @change="resetMemberPageAndLoad"><option value="">全部状态</option><option value="1">启用</option><option value="0">停用</option></select></div><div class="responsive-table"><table><thead><tr><th>成员</th><th>状态</th><th class="table-actions">操作</th></tr></thead><tbody><tr v-for="user in workspace.members.content" :key="user.id"><td><button class="table-primary-action" type="button" @click="openUserProfile(user)"><strong>{{ user.displayName || user.username }}</strong><span>{{ user.username }}</span></button></td><td><span class="status-badge" :class="{ builtIn: user.status !== 1 }">{{ user.status === 1 ? '启用' : '停用' }}</span></td><td class="table-actions"><button class="table-action" type="button" @click="openUserProfile(user)">查看关系</button><button class="table-action danger" type="button" @click="removeMemberTarget = user">移除</button></td></tr><tr v-if="!workspace.members.content.length"><td colspan="3"><div class="table-empty">暂无符合条件的直属成员。</div></td></tr></tbody></table></div><Pagination v-if="workspace.members.totalElements > 0" :current="memberQuery.page" :total="workspace.members.totalElements" :page-size="memberPageSize" @update:current="changeMemberPage" @update:page-size="changeMemberPageSize" /></section>
+        <section class="admin-data-surface"><header class="data-toolbar"><div><h2>直属成员 <span>{{ workspace.members.totalElements }}</span></h2><p>成员详情中可维护部门、协作组和直接角色。</p></div><div class="admin-page-actions"><button class="button-secondary" type="button" @click="openAddMemberDrawer">添加成员</button></div></header><div class="data-toolbar user-filter-bar member-filter-bar"><input v-model="memberQuery.keyword" type="search" placeholder="搜索用户名 / 显示名" @keyup.enter="resetMemberPageAndLoad"><FormSelect v-model="memberQuery.status" :options="memberStatusOptions" aria-label="成员状态筛选" @change="resetMemberPageAndLoad" /></div><div class="responsive-table"><table><thead><tr><th>成员</th><th>状态</th><th class="table-actions">操作</th></tr></thead><tbody><tr v-for="user in workspace.members.content" :key="user.subjectId"><td><button class="table-primary-action" type="button" @click="openUserProfile(user)"><strong>{{ user.displayName || user.username }}</strong><span>{{ user.username }}</span></button></td><td><span class="status-badge" :class="{ builtIn: user.status !== 1 }">{{ user.status === 1 ? '启用' : '停用' }}</span></td><td class="table-actions"><button class="table-action" type="button" @click="openUserProfile(user)">查看关系</button><button class="table-action danger" type="button" @click="removeMemberTarget = user">移除</button></td></tr><tr v-if="!workspace.members.content.length"><td colspan="3"><div class="table-empty">暂无符合条件的直属成员。</div></td></tr></tbody></table></div><Pagination v-if="workspace.members.totalElements > 0" :current="memberQuery.page" :total="workspace.members.totalElements" :page-size="memberPageSize" @update:current="changeMemberPage" @update:page-size="changeMemberPageSize" /></section>
 
         <section class="admin-data-surface assignment-section"><header><div><h3>部门角色 <span>{{ departmentRoles.length }}</span></h3><p>挂载到部门的角色由该部门全体成员自动继承，无需逐人分配；撤销时若涉及最后一位系统管理员会被拒绝。</p></div></header><div v-if="departmentRoles.length" class="assignment-list"><article v-for="role in departmentRoles" :key="role.id"><div><strong>{{ role.name }}</strong><span>{{ role.code }}</span></div><button class="table-action danger" type="button" @click="requestRemoveDepartmentRole(role)">撤销</button></article></div><p v-else class="assignment-empty">尚未挂载部门角色。</p><div v-if="allRoles.length > assignedDepartmentRoleIds.size" class="assignment-list available"><label class="search-field"><span class="sr-only">搜索可挂载角色</span><input v-model="assignableDepartmentRoleQuery" type="search" placeholder="搜索角色名称或编码"></label><article v-for="role in assignableDepartmentRoles" :key="role.id"><div><strong>{{ role.name }}</strong><span>{{ role.code }}</span></div><button class="table-action" type="button" @click="addDepartmentRole(role.id)">挂载</button></article></div></section>
       </div>
     </div>
 
-    <EntityDrawer :open="departmentDrawerOpen" :pending="submitting" :title="departmentDrawerMode === 'root' ? '创建根部门' : '新建下级部门'" :description="departmentDrawerMode === 'root' ? '根部门是组织树的顶层节点，创建后可在其下继续建子部门和成员。' : (workspace ? `上级部门：${workspace.department.name}` : '')" @close="closeDepartmentDrawer"><form class="drawer-form" @submit.prevent="createChildDepartment"><label><span>部门编码</span><input v-model="createDepartmentForm.code" required :placeholder="departmentDrawerMode === 'root' ? '根部门编码' : '下级部门编码'"></label><label><span>部门名称</span><input v-model="createDepartmentForm.name" required :placeholder="departmentDrawerMode === 'root' ? '根部门名称' : '下级部门名称'"></label><label><span>排序值</span><input v-model.number="createDepartmentForm.sortOrder" type="number" min="0" placeholder="0"></label><div class="member-picker"><span class="member-picker-title">绑定已有成员（可选，创建后直接挂到新部门）</span><label class="search-field"><span class="sr-only">搜索可绑定成员</span><input v-model="pickerKeyword" type="search" placeholder="搜索用户名 / 显示名" @keyup.enter="searchBindableUsers"></label><p v-if="memberOptionsLoading" class="member-picker-status">正在加载成员列表...</p><p v-else-if="!bindableUsers.length" class="member-picker-status">暂无可绑定的成员。</p><div v-else class="member-option-list"><label v-for="user in bindableUsers" :key="user.id" class="member-option"><input type="checkbox" :checked="selectedMemberIds.has(user.id)" @change="toggleMember(user.id)"><span><strong>{{ user.displayName || user.username }}</strong><small>{{ user.username }} · {{ user.departmentName || '未分配部门' }}</small></span></label></div><p v-if="selectedMemberIds.size" class="member-picker-status">已选 {{ selectedMemberIds.size }} 人，创建时一并挂到新部门。</p></div><footer class="drawer-actions"><button class="button-secondary" type="button" :disabled="submitting" @click="closeDepartmentDrawer">取消</button><button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在创建…' : '创建部门' }}</button></footer></form></EntityDrawer>
+    <EntityDrawer :open="departmentDrawerOpen" :pending="submitting" :title="departmentDrawerMode === 'root' ? '创建根部门' : '新建下级部门'" :description="departmentDrawerMode === 'root' ? '根部门是组织树的顶层节点，创建后可在其下继续建子部门和成员。' : (workspace ? `上级部门：${workspace.department.name}` : '')" @close="closeDepartmentDrawer"><form class="drawer-form" @submit.prevent="createChildDepartment"><label><span>部门编码</span><input v-model="createDepartmentForm.code" required :placeholder="departmentDrawerMode === 'root' ? '根部门编码' : '下级部门编码'"></label><label><span>部门名称</span><input v-model="createDepartmentForm.name" required :placeholder="departmentDrawerMode === 'root' ? '根部门名称' : '下级部门名称'"></label><label><span>排序值</span><input v-model.number="createDepartmentForm.sortOrder" type="number" min="0" placeholder="0"></label><div class="member-picker"><span class="member-picker-title">绑定已有成员（可选，创建后直接挂到新部门）</span><label class="search-field"><span class="sr-only">搜索可绑定成员</span><input v-model="pickerKeyword" type="search" placeholder="搜索用户名 / 显示名" @keyup.enter="searchBindableUsers"></label><p v-if="memberOptionsLoading" class="member-picker-status">正在加载成员列表...</p><p v-else-if="!bindableUsers.length" class="member-picker-status">暂无可绑定的成员。</p><div v-else class="member-option-list"><label v-for="user in bindableUsers" :key="user.subjectId" class="member-option"><input type="checkbox" :checked="selectedMemberIds.has(user.subjectId)" @change="toggleMember(user.subjectId)"><span><strong>{{ user.displayName || user.username }}</strong><small>{{ user.username }} · {{ user.departmentName || '未分配部门' }}</small></span></label></div><p v-if="selectedMemberIds.size" class="member-picker-status">已选 {{ selectedMemberIds.size }} 人，创建时一并挂到新部门。</p></div><footer class="drawer-actions"><button class="button-secondary" type="button" :disabled="submitting" @click="closeDepartmentDrawer">取消</button><button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在创建…' : '创建部门' }}</button></footer></form></EntityDrawer>
 
-    <EntityDrawer :open="editDrawerOpen" :pending="submitting" title="编辑部门" :description="workspace ? `${workspace.department.code} · 直属成员 ${workspace.members.totalElements} 人` : ''" @close="closeEditDrawer"><form class="drawer-form" @submit.prevent="saveDepartmentEdit"><label><span>部门名称</span><input v-model="editDepartmentForm.name" required placeholder="部门名称"></label><label><span>上级部门</span><select v-model="editDepartmentForm.parentId"><option value="">未分配（作为根部门）</option><option v-for="department in editableParentDepartments" :key="department.id" :value="String(department.id)">{{ department.name }}</option></select></label><label><span>排序值</span><input v-model.number="editDepartmentForm.sortOrder" type="number" min="0" placeholder="0"></label><label><span>状态</span><select v-model.number="editDepartmentForm.status"><option :value="1">启用</option><option :value="0">停用</option></select></label><footer class="drawer-actions"><button class="button-secondary" type="button" :disabled="submitting" @click="closeEditDrawer">取消</button><button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在保存…' : '保存修改' }}</button></footer></form></EntityDrawer>
+    <EntityDrawer :open="editDrawerOpen" :pending="submitting" title="编辑部门" :description="workspace ? `${workspace.department.code} · 直属成员 ${workspace.members.totalElements} 人` : ''" @close="closeEditDrawer"><form class="drawer-form" @submit.prevent="saveDepartmentEdit"><label><span>部门名称</span><input v-model="editDepartmentForm.name" required placeholder="部门名称"></label><label><span>上级部门</span><FormSelect v-model="editDepartmentForm.parentId" :options="parentDepartmentOptions" aria-label="上级部门" /></label><label><span>排序值</span><input v-model.number="editDepartmentForm.sortOrder" type="number" min="0" placeholder="0"></label><label><span>状态</span><FormSelect v-model="editDepartmentForm.status" :options="departmentStatusOptions" aria-label="部门状态" /></label><footer class="drawer-actions"><button class="button-secondary" type="button" :disabled="submitting" @click="closeEditDrawer">取消</button><button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在保存…' : '保存修改' }}</button></footer></form></EntityDrawer>
 
     <EntityDrawer :open="memberDrawerOpen" :pending="submitting" title="创建成员" :description="workspace ? `创建后将直接归属 ${workspace.department.name}` : ''" @close="closeMemberDrawer"><form class="drawer-form" @submit.prevent="createDepartmentUser"><label><span>用户名</span><input v-model="createUserForm.username" required placeholder="用户名"></label><label><span>初始密码</span><input v-model="createUserForm.password" required type="password" autocomplete="new-password" placeholder="初始密码"><small>8-64 位，需包含大写字母、小写字母、数字与特殊字符。</small></label><label><span>显示名</span><input v-model="createUserForm.displayName" placeholder="显示名"></label><label><span>邮箱（可选）</span><input v-model="createUserForm.email" type="email" placeholder="user@example.com"></label><label><span>手机号（可选）</span><input v-model="createUserForm.phone" placeholder="手机号"></label><footer class="drawer-actions"><button class="button-secondary" type="button" :disabled="submitting" @click="closeMemberDrawer">取消</button><button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在创建…' : '创建成员' }}</button></footer></form></EntityDrawer>
 
-    <EntityDrawer :open="addMemberDrawerOpen" :pending="submitting" title="添加已有成员" :description="workspace ? `选中的成员将加入 ${workspace.department.name}；从其他部门选中的成员会直接变更归属。` : ''" @close="closeAddMemberDrawer"><form class="drawer-form" @submit.prevent="addSelectedMembers"><div class="member-picker"><span class="member-picker-title">选择要加入本部门的成员</span><label class="search-field"><span class="sr-only">搜索可添加成员</span><input v-model="pickerKeyword" type="search" placeholder="搜索用户名 / 显示名" @keyup.enter="searchBindableUsers"></label><p v-if="memberOptionsLoading" class="member-picker-status">正在加载成员列表...</p><p v-else-if="!addableUsers.length" class="member-picker-status">暂无可添加的成员。</p><div v-else class="member-option-list"><label v-for="user in addableUsers" :key="user.id" class="member-option"><input type="checkbox" :checked="addMemberSelectedIds.has(user.id)" @change="toggleAddMember(user.id)"><span><strong>{{ user.displayName || user.username }}</strong><small>{{ user.username }} · {{ user.departmentName || '未分配部门' }}</small></span></label></div><p v-if="addMemberSelectedIds.size" class="member-picker-status">已选 {{ addMemberSelectedIds.size }} 人，添加后归属本部门。</p></div><footer class="drawer-actions"><button class="button-secondary" type="button" :disabled="submitting" @click="closeAddMemberDrawer">取消</button><button class="button-primary" type="submit" :disabled="submitting || !addMemberSelectedIds.size">{{ submitting ? '正在添加…' : `添加选中的 ${addMemberSelectedIds.size} 名成员` }}</button></footer></form></EntityDrawer>
+    <EntityDrawer :open="addMemberDrawerOpen" :pending="submitting" title="添加已有成员" :description="workspace ? `选中的成员将加入 ${workspace.department.name}；从其他部门选中的成员会直接变更归属。` : ''" @close="closeAddMemberDrawer"><form class="drawer-form" @submit.prevent="addSelectedMembers"><div class="member-picker"><span class="member-picker-title">选择要加入本部门的成员</span><label class="search-field"><span class="sr-only">搜索可添加成员</span><input v-model="pickerKeyword" type="search" placeholder="搜索用户名 / 显示名" @keyup.enter="searchBindableUsers"></label><p v-if="memberOptionsLoading" class="member-picker-status">正在加载成员列表...</p><p v-else-if="!addableUsers.length" class="member-picker-status">暂无可添加的成员。</p><div v-else class="member-option-list"><label v-for="user in addableUsers" :key="user.subjectId" class="member-option"><input type="checkbox" :checked="addMemberSelectedIds.has(user.subjectId)" @change="toggleAddMember(user.subjectId)"><span><strong>{{ user.displayName || user.username }}</strong><small>{{ user.username }} · {{ user.departmentName || '未分配部门' }}</small></span></label></div><p v-if="addMemberSelectedIds.size" class="member-picker-status">已选 {{ addMemberSelectedIds.size }} 人，添加后归属本部门。</p></div><footer class="drawer-actions"><button class="button-secondary" type="button" :disabled="submitting" @click="closeAddMemberDrawer">取消</button><button class="button-primary" type="submit" :disabled="submitting || !addMemberSelectedIds.size">{{ submitting ? '正在添加…' : `添加选中的 ${addMemberSelectedIds.size} 名成员` }}</button></footer></form></EntityDrawer>
 
-    <EntityDrawer :open="profileDrawerOpen" :pending="submitting" wide :title="profile ? (profile.user.displayName || profile.user.username) : '成员关系'" :description="profile?.user.username" @close="closeProfileDrawer"><template v-if="profile"><form class="drawer-form" @submit.prevent="updateUserDepartment"><label><span>显示名</span><input v-model="departmentForm.name" placeholder="显示名"></label><label><span>所属部门</span><select v-model="departmentForm.id"><option value="">未分配部门</option><option v-for="department in departments" :key="department.id" :value="String(department.id)">{{ department.name }}</option></select></label><button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在保存…' : '保存成员资料' }}</button></form><div class="admin-page-actions" style="margin-top:14px"><button class="button-secondary" type="button" @click="goToUsersView">在用户管理中查看</button></div><section class="assignment-section"><header><div><h3>协作组<span>{{ profile.userGroups.length }}</span></h3><p>协作组只用于成员协作和消息收件人扩展，不授予角色或权限。</p></div></header><div v-if="profile.userGroups.length" class="assignment-list"><article v-for="group in profile.userGroups" :key="group.id"><div><strong>{{ group.name }}</strong><span>{{ group.code }}</span></div><button class="table-action danger" type="button" @click="requestRemoveUserGroup(group)">移除</button></article></div><p v-else class="assignment-empty">尚未加入协作组。</p><div v-if="allGroups.length > assignedGroupIds.size" class="assignment-list available"><label class="search-field"><span class="sr-only">搜索可分配协作组</span><input v-model="assignableGroupQuery" type="search" placeholder="搜索协作组名称或编码"></label><article v-for="group in assignableGroups" :key="group.id"><div><strong>{{ group.name }}</strong><span>{{ group.code }}</span></div><button class="table-action" type="button" @click="addUserGroup(group.id)">添加</button></article></div></section><section class="assignment-section"><header><div><h3>有效角色 <span>{{ profile.roles.length }}</span></h3><p>包含个人直接分配的角色和通过所在部门继承的角色；有效权限由全部有效角色聚合、去重得到。</p></div></header><div v-if="profile.roles.length" class="assignment-list"><article v-for="role in profile.roles" :key="role.id"><div><strong>{{ role.name }}</strong><span>{{ role.code }} · {{ roleSourceLabel(role.source) }}</span></div><button v-if="role.source === 'direct'" class="table-action danger" type="button" @click="requestRemoveRole(role)">移除</button></article></div><p v-else class="assignment-empty">尚未分配角色。</p><div v-if="allRoles.length > assignedRoleIds.size" class="assignment-list available"><label class="search-field"><span class="sr-only">搜索可分配角色</span><input v-model="assignableRoleQuery" type="search" placeholder="搜索角色名称或编码"></label><article v-for="role in assignableRoles" :key="role.id"><div><strong>{{ role.name }}</strong><span>{{ role.code }}</span></div><button class="table-action" type="button" @click="addRole(role.id)">添加</button></article></div></section><section class="assignment-section"><header><div><h3>有效权限 <span>{{ profile.effectivePermissions.length }}</span></h3><p>由全部有效角色聚合、去重得到，仅供查看，不能在这里直接修改。</p></div></header><div v-if="profile.effectivePermissions.length" class="assignment-list"><article v-for="permission in profile.effectivePermissions" :key="permission.id"><div><strong>{{ permission.name }}</strong><span>{{ permission.code }} · {{ permissionTypeLabel(permission.type) }} · {{ roleSourceLabel(permission.source) }}</span></div></article></div><p v-else class="assignment-empty">暂无有效权限。</p></section></template></EntityDrawer>
+    <EntityDrawer :open="profileDrawerOpen" :pending="submitting" wide :title="profile ? (profile.user.displayName || profile.user.username) : '成员关系'" :description="profile?.user.username" @close="closeProfileDrawer"><template v-if="profile"><form class="drawer-form" @submit.prevent="updateUserDepartment"><label><span>显示名</span><input v-model="departmentForm.name" placeholder="显示名"></label><label><span>所属部门</span><FormSelect v-model="departmentForm.id" :options="profileDepartmentOptions" aria-label="所属部门" /></label><button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在保存…' : '保存成员资料' }}</button></form><div class="admin-page-actions" style="margin-top:14px"><button class="button-secondary" type="button" @click="goToUsersView">在用户管理中查看</button></div><section class="assignment-section"><header><div><h3>协作组<span>{{ profile.userGroups.length }}</span></h3><p>协作组只用于成员协作和消息收件人扩展，不授予角色或权限。</p></div></header><div v-if="profile.userGroups.length" class="assignment-list"><article v-for="group in profile.userGroups" :key="group.id"><div><strong>{{ group.name }}</strong><span>{{ group.code }}</span></div><button class="table-action danger" type="button" @click="requestRemoveUserGroup(group)">移除</button></article></div><p v-else class="assignment-empty">尚未加入协作组。</p><div v-if="allGroups.length > assignedGroupIds.size" class="assignment-list available"><label class="search-field"><span class="sr-only">搜索可分配协作组</span><input v-model="assignableGroupQuery" type="search" placeholder="搜索协作组名称或编码"></label><article v-for="group in assignableGroups" :key="group.id"><div><strong>{{ group.name }}</strong><span>{{ group.code }}</span></div><button class="table-action" type="button" @click="addUserGroup(group.id)">添加</button></article></div></section><section class="assignment-section"><header><div><h3>有效角色 <span>{{ profile.roles.length }}</span></h3><p>包含个人直接分配的角色和通过所在部门继承的角色；有效权限由全部有效角色聚合、去重得到。</p></div></header><div v-if="profile.roles.length" class="assignment-list"><article v-for="role in profile.roles" :key="role.id"><div><strong>{{ role.name }}</strong><span>{{ role.code }} · {{ roleSourceLabel(role.source) }}</span></div><button v-if="role.source === 'direct'" class="table-action danger" type="button" @click="requestRemoveRole(role)">移除</button></article></div><p v-else class="assignment-empty">尚未分配角色。</p><div v-if="allRoles.length > assignedRoleIds.size" class="assignment-list available"><label class="search-field"><span class="sr-only">搜索可分配角色</span><input v-model="assignableRoleQuery" type="search" placeholder="搜索角色名称或编码"></label><article v-for="role in assignableRoles" :key="role.id"><div><strong>{{ role.name }}</strong><span>{{ role.code }}</span></div><button class="table-action" type="button" @click="addRole(role.id)">添加</button></article></div></section><section class="assignment-section"><header><div><h3>有效权限 <span>{{ profile.effectivePermissions.length }}</span></h3><p>由全部有效角色聚合、去重得到，仅供查看，不能在这里直接修改。</p></div></header><div v-if="profile.effectivePermissions.length" class="assignment-list"><article v-for="permission in profile.effectivePermissions" :key="permission.id"><div><strong>{{ permission.name }}</strong><span>{{ permission.code }} · {{ permissionTypeLabel(permission.type) }} · {{ roleSourceLabel(permission.source) }}</span></div></article></div><p v-else class="assignment-empty">暂无有效权限。</p></section></template></EntityDrawer>
 
     <ConfirmDialog :open="Boolean(relationshipTarget)" :title="relationshipTarget?.type === 'role' ? '移除直接角色' : (relationshipTarget?.type === 'departmentRole' ? '撤销部门角色' : '移出协作组')" :description="relationshipTarget?.type === 'role' ? `将移除“${relationshipTarget?.name || ''}”并改变该成员的有效权限。此操作无法撤销。` : (relationshipTarget?.type === 'departmentRole' ? `将撤销部门角色“${relationshipTarget?.name || ''}”，该部门全体成员将不再通过部门继承此角色。若该角色为系统保留的最后管理员角色，撤销可能被拒绝。` : `将把成员移出“${relationshipTarget?.name || ''}”。协作组不授予权限，仅解除成员关系。`)" :pending="relationshipPending" confirm-label="确认移除" @close="relationshipTarget = null" @confirm="confirmRemoveRelationship" />
 

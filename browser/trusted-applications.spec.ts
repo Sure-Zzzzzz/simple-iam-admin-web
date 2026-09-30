@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
-const user = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const user = { subjectId: 'sid-admin', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const applicationPage = {
   content: [{ id: 1, applicationCode: 'demo', applicationName: '示例应用', description: '用于展示。', icon: 'access-control', clientCount: 1, portalEnabled: false }],
   totalElements: 1, totalPages: 1, page: 1, size: 20, numberOfElements: 1, first: true, last: true, empty: false
@@ -34,12 +35,19 @@ const permissionManifest = {
   updatedAt: '2026-08-31T08:00:00Z'
 };
 const portalLoginLanding = { applicationCode: null, version: 1 };
+const ownerInheritance = { applicationId: 1, enabled: true, applicationAuthorizationEpoch: 3 };
+
+async function mockTrustedApplicationDetail(page: Page) {
+  await page.route('**/iam/admin/trusted-applications/1/owner-inheritance', route => route.fulfill({ json: ownerInheritance }));
+  await page.route('**/iam/admin/trusted-applications/1/resource-verification-clients', route => route.fulfill({ json: [] }));
+}
 
 test('生产构建中可信应用目录提供管理能力', async ({ page }) => {
   await page.route('**/iam/web/auth/me', route => route.fulfill({ json: user }));
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
   await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: applicationPage }));
   await page.route('**/iam/admin/portal/login-landing', route => route.fulfill({ json: portalLoginLanding }));
+  await mockTrustedApplicationDetail(page);
   await page.route('**/iam/admin/trusted-applications/1/permission-manifest', route => route.fulfill({ json: permissionManifest }));
   await page.route('**/iam/admin/trusted-applications/1', route => route.fulfill({ json: applicationDetail }));
 
@@ -59,6 +67,7 @@ test('新建可信应用后一次性展示服务端生成的初始客户端密�
   await page.route('**/iam/web/auth/me', route => route.fulfill({ json: user }));
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
   await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: applicationPage }));
+  await mockTrustedApplicationDetail(page);
   await page.route('**/iam/admin/trusted-applications/1', route => route.fulfill({ json: applicationDetail }));
   await page.route('**/iam/admin/trusted-applications', async route => {
     if (route.request().method() === 'POST') {
@@ -89,6 +98,7 @@ test('详情抽屉门户菜单树编辑器随门户开关启用并整树保存',
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
   await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: applicationPage }));
   await page.route('**/iam/admin/portal/login-landing', route => route.fulfill({ json: portalLoginLanding }));
+  await mockTrustedApplicationDetail(page);
   await page.route('**/iam/admin/trusted-applications/1/resource-verification-clients', route => route.fulfill({ json: [] }));
   await page.route('**/iam/admin/trusted-applications/1/permission-manifest', route => route.fulfill({ json: permissionManifest }));
   await page.route('**/iam/admin/trusted-applications/1', async route => {
@@ -140,6 +150,7 @@ test('详情抽屉权限清单申报应整表提交并展示新版本', async ({
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
   await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: applicationPage }));
   await page.route('**/iam/admin/portal/login-landing', route => route.fulfill({ json: portalLoginLanding }));
+  await mockTrustedApplicationDetail(page);
   await page.route('**/iam/admin/trusted-applications/1/resource-verification-clients', route => route.fulfill({ json: [] }));
   await page.route('**/iam/admin/trusted-applications/1', route => route.fulfill({ json: applicationDetail }));
   await page.route('**/iam/admin/trusted-applications/1/permission-manifest', async route => {

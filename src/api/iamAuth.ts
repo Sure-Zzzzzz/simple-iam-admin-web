@@ -1,5 +1,5 @@
 export interface AuthUser {
-  userId: number | null;
+  subjectId: string | null;
   username: string;
   displayName: string | null;
   admin: boolean;
@@ -41,7 +41,7 @@ export interface StatusPageQuery extends PageQuery {
 }
 
 export interface IamUser {
-  id: number;
+  subjectId: string;
   username: string;
   displayName: string | null;
   email: string | null;
@@ -95,7 +95,7 @@ export interface RoleSummary extends IamRole {
 }
 
 export interface AdminDashboardRecentLogin {
-  userId: number;
+  subjectId: string;
   username: string;
   displayName: string | null;
   departmentName: string | null;
@@ -122,7 +122,7 @@ export interface AdminDashboard {
 
 export interface AdminSession {
   sessionId: string;
-  userId: number;
+  subjectId: string;
   username: string;
   clientId: string | null;
   remoteIp: string | null;
@@ -183,15 +183,15 @@ export interface MessageBatchDetail extends MessageBatchSummary {
 }
 
 export interface MessageBatchRecipient {
-  userId: number;
+  subjectId: string;
   username: string;
   displayName: string;
   readAt: string | null;
 }
 
 export interface CreateMessagePayload {
-  recipientUserId?: number;
-  recipientUserIds?: number[];
+  recipientSubjectId?: string;
+  recipientSubjectIds?: string[];
   departmentIds?: number[];
   userGroupIds?: number[];
   includeChildDepartments?: boolean;
@@ -217,7 +217,7 @@ export interface DepartmentPayload {
   parentId: number | null;
   sortOrder: number;
   status: number;
-  memberIds?: number[];
+  memberSubjectIds?: string[];
 }
 
 export interface IamUserGroup {
@@ -424,6 +424,12 @@ export interface TrustedApplicationDetail {
   clients: TrustedApplicationClient[];
 }
 
+export interface TrustedApplicationOwnerInheritance {
+  applicationId: number;
+  enabled: boolean;
+  applicationAuthorizationEpoch: number;
+}
+
 export interface TrustedApplicationClient {
   id: string;
   clientId: string;
@@ -460,6 +466,8 @@ export interface CreateTrustedApplicationPayload {
   applicationName: string;
   description: string;
   icon: string;
+  // 内置应用：禁删除/禁停用，客户端强制免授权确认
+  builtIn?: boolean;
   portal?: PortalIntegrationPayload;
   initialClient: CreateTrustedApplicationClientPayload;
   roles?: string[];
@@ -471,6 +479,7 @@ export interface UpdateTrustedApplicationPayload {
   applicationName: string;
   description: string;
   icon: string;
+  builtIn?: boolean;
   portal?: PortalIntegrationPayload;
 }
 
@@ -586,6 +595,15 @@ export function fetchCurrentUser(): Promise<AuthUser> {
   return request('/iam/web/auth/me');
 }
 
+// 注销当前会话；无权限/被拒场景下也必须可用，不能让用户困在子应用里
+export async function logoutCurrentSession(): Promise<void> {
+  try {
+    await request('/iam/web/auth/logout', { method: 'POST' });
+  } catch {
+    // 会话可能已失效；注销流程无论如何继续跳登录页
+  }
+}
+
 export async function createMessage(payload: CreateMessagePayload): Promise<MessageSendResponse> {
   return request('/iam/admin/messages', {
     method: 'POST',
@@ -619,64 +637,83 @@ export async function createUser(payload: CreateUserPayload): Promise<IamUser> {
   });
 }
 
-export async function updateUser(userId: number, payload: UpdateUserPayload): Promise<IamUser> {
-  return request(`/iam/admin/users/${userId}`, {
+export interface UserImportRowResult {
+  rowNumber: number;
+  username: string;
+  created: boolean;
+  message: string;
+}
+
+export interface UserImportResult {
+  totalRows: number;
+  createdRows: number;
+  rows: UserImportRowResult[];
+}
+
+export async function importUsers(file: File): Promise<UserImportResult> {
+  const form = new FormData();
+  form.append('file', file);
+  return request('/iam/admin/users/import', { method: 'POST', body: form });
+}
+
+export async function updateUser(subjectId: string, payload: UpdateUserPayload): Promise<IamUser> {
+  return request(`/iam/admin/users/${subjectId}`, {
     method: 'PUT',
     body: JSON.stringify(payload)
   });
 }
 
-export async function enableUser(userId: number): Promise<void> {
-  await request(`/iam/admin/users/${userId}/enable`, { method: 'PUT' });
+export async function enableUser(subjectId: string): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/enable`, { method: 'PUT' });
 }
 
-export async function disableUser(userId: number): Promise<void> {
-  await request(`/iam/admin/users/${userId}/disable`, { method: 'PUT' });
+export async function disableUser(subjectId: string): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/disable`, { method: 'PUT' });
 }
 
-export async function unlockUser(userId: number): Promise<void> {
-  await request(`/iam/admin/users/${userId}/unlock`, { method: 'PUT' });
+export async function unlockUser(subjectId: string): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/unlock`, { method: 'PUT' });
 }
 
-export async function resetUserPassword(userId: number, newPassword: string): Promise<void> {
-  await request(`/iam/admin/users/${userId}/reset-password`, {
+export async function resetUserPassword(subjectId: string, newPassword: string): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/reset-password`, {
     method: 'PUT',
     body: JSON.stringify({ newPassword })
   });
 }
 
-export async function deleteUser(userId: number): Promise<void> {
-  await request(`/iam/admin/users/${userId}`, { method: 'DELETE' });
+export async function deleteUser(subjectId: string): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}`, { method: 'DELETE' });
 }
 
-export async function fetchUserRoles(userId: number): Promise<IamRole[]> {
-  return request(`/iam/admin/users/${userId}/roles`);
+export async function fetchUserRoles(subjectId: string): Promise<IamRole[]> {
+  return request(`/iam/admin/users/${subjectId}/roles`);
 }
 
-export async function assignUserRole(userId: number, roleId: number): Promise<void> {
-  await request(`/iam/admin/users/${userId}/roles/${roleId}`, { method: 'POST' });
+export async function assignUserRole(subjectId: string, roleId: number): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/roles/${roleId}`, { method: 'POST' });
 }
 
-export async function revokeUserRole(userId: number, roleId: number): Promise<void> {
-  await request(`/iam/admin/users/${userId}/roles/${roleId}`, { method: 'DELETE' });
+export async function revokeUserRole(subjectId: string, roleId: number): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/roles/${roleId}`, { method: 'DELETE' });
 }
 
-export async function fetchUserApplicationAuthorizations(userId: number): Promise<UserApplicationAuthorization[]> {
-  return request(`/iam/admin/users/${userId}/application-authorizations`);
+export async function fetchUserApplicationAuthorizations(subjectId: string): Promise<UserApplicationAuthorization[]> {
+  return request(`/iam/admin/users/${subjectId}/application-authorizations`);
 }
 
-export function fetchUserApplicationAuthorization(userId: number, applicationId: number): Promise<UserApplicationAuthorizationDetail> {
-  return request(`/iam/admin/users/${userId}/application-authorizations/${applicationId}`);
+export function fetchUserApplicationAuthorization(subjectId: string, applicationId: number): Promise<UserApplicationAuthorizationDetail> {
+  return request(`/iam/admin/users/${subjectId}/application-authorizations/${applicationId}`);
 }
 
 // PUT 为全量替换 upsert；三类码须为应用权限清单子集，
 // manifestVersion/Digest 由服务端按清单当前真值落库
 export async function grantUserApplication(
-  userId: number,
+  subjectId: string,
   applicationId: number,
   content: ApplicationGrantContent
 ): Promise<void> {
-  await request(`/iam/admin/users/${userId}/application-authorizations/${applicationId}`, {
+  await request(`/iam/admin/users/${subjectId}/application-authorizations/${applicationId}`, {
     method: 'PUT',
     body: JSON.stringify({
       admitted: true,
@@ -688,8 +725,8 @@ export async function grantUserApplication(
   });
 }
 
-export async function revokeUserApplication(userId: number, applicationId: number): Promise<void> {
-  await request(`/iam/admin/users/${userId}/application-authorizations/${applicationId}`, { method: 'DELETE' });
+export async function revokeUserApplication(subjectId: string, applicationId: number): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/application-authorizations/${applicationId}`, { method: 'DELETE' });
 }
 
 export interface LoginProvider {
@@ -704,15 +741,15 @@ export function fetchLoginProviders(): Promise<LoginProvider[]> {
   return request<{ providers: LoginProvider[] }>('/iam/web/auth/providers').then(response => response.providers);
 }
 
-export async function bindExternalIdentity(userId: number, providerCode: string, externalId: string): Promise<void> {
-  await request(`/iam/admin/users/${userId}/external-identity`, {
+export async function bindExternalIdentity(subjectId: string, providerCode: string, externalId: string): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/external-identity`, {
     method: 'POST',
     body: JSON.stringify({ providerCode, externalId })
   });
 }
 
-export async function unbindExternalIdentity(userId: number): Promise<void> {
-  await request(`/iam/admin/users/${userId}/external-identity`, { method: 'DELETE' });
+export async function unbindExternalIdentity(subjectId: string): Promise<void> {
+  await request(`/iam/admin/users/${subjectId}/external-identity`, { method: 'DELETE' });
 }
 
 export async function fetchDepartments(): Promise<IamDepartment[]> {
@@ -785,12 +822,12 @@ export async function fetchUserGroupUsers(groupId: number): Promise<IamUser[]> {
   return request(`/iam/admin/user-groups/${groupId}/users`);
 }
 
-export async function assignUserGroupUser(groupId: number, userId: number): Promise<void> {
-  await request(`/iam/admin/user-groups/${groupId}/users/${userId}`, { method: 'POST' });
+export async function assignUserGroupUser(groupId: number, subjectId: string): Promise<void> {
+  await request(`/iam/admin/user-groups/${groupId}/users/${subjectId}`, { method: 'POST' });
 }
 
-export async function revokeUserGroupUser(groupId: number, userId: number): Promise<void> {
-  await request(`/iam/admin/user-groups/${groupId}/users/${userId}`, { method: 'DELETE' });
+export async function revokeUserGroupUser(groupId: number, subjectId: string): Promise<void> {
+  await request(`/iam/admin/user-groups/${groupId}/users/${subjectId}`, { method: 'DELETE' });
 }
 
 export async function fetchAdminDashboard(): Promise<AdminDashboard> {
@@ -804,21 +841,21 @@ export async function fetchDashboardRecentLogins(
 }
 
 export interface ActiveSessionQuery extends PageQuery {
-  userId?: number;
+  subjectId?: string;
 }
 
 export async function fetchActiveSessions(
   query: ActiveSessionQuery = {}
 ): Promise<PageResponse<AdminSession>> {
   const parameters = toPageSearchParams(query);
-  if (query.userId !== undefined) {
-    parameters.set('userId', String(query.userId));
+  if (query.subjectId !== undefined) {
+    parameters.set('subjectId', String(query.subjectId));
   }
   return request(`/iam/admin/sessions?${parameters.toString()}`);
 }
 
-export async function revokeUserSessions(userId: number): Promise<AdminSessionRevokeResult> {
-  return request(`/iam/admin/sessions/users/${userId}/revoke`, { method: 'PUT' });
+export async function revokeUserSessions(subjectId: string): Promise<AdminSessionRevokeResult> {
+  return request(`/iam/admin/sessions/users/${subjectId}/revoke`, { method: 'PUT' });
 }
 
 export async function fetchRoles(): Promise<IamRole[]> {
@@ -938,8 +975,8 @@ export async function fetchOrganizationDepartmentWorkspace(
   return request(`/iam/admin/organizations/departments/${departmentId}/workspace?${toPageSearchParams(query).toString()}`);
 }
 
-export async function fetchOrganizationUserProfile(userId: number): Promise<OrganizationUserProfile> {
-  return request(`/iam/admin/organizations/users/${userId}/profile`);
+export async function fetchOrganizationUserProfile(subjectId: string): Promise<OrganizationUserProfile> {
+  return request(`/iam/admin/organizations/users/${subjectId}/profile`);
 }
 
 export async function fetchTrustedApplications(query: PageQuery = {}): Promise<PageResponse<TrustedApplication>> {
@@ -986,6 +1023,21 @@ export async function updateTrustedApplicationPortalConfiguration(
   return request(`/iam/admin/trusted-applications/${applicationId}/portal/configuration`, {
     method: 'PUT',
     body: JSON.stringify(payload)
+  });
+}
+
+export async function fetchTrustedApplicationOwnerInheritance(
+  applicationId: number
+): Promise<TrustedApplicationOwnerInheritance> {
+  return request(`/iam/admin/trusted-applications/${applicationId}/owner-inheritance`);
+}
+
+export async function updateTrustedApplicationOwnerInheritance(
+  applicationId: number,
+  enabled: boolean
+): Promise<TrustedApplicationOwnerInheritance> {
+  return request(`/iam/admin/trusted-applications/${applicationId}/owner-inheritance?enabled=${enabled}`, {
+    method: 'PUT'
   });
 }
 
@@ -1151,7 +1203,7 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     ...(init.headers as Record<string, string> | undefined)
   };
-  if (init.body !== undefined && !headers['Content-Type']) {
+  if (init.body !== undefined && !(init.body instanceof FormData) && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
   const method = (init.method || 'GET').toUpperCase();

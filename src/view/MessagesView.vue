@@ -53,7 +53,7 @@ const departmentKeyword = ref('');
 const groupKeyword = ref('');
 
 const form = reactive({
-  recipientUserIds: [] as number[],
+  recipientSubjectIds: [] as string[],
   departmentIds: [] as number[],
   userGroupIds: [] as number[],
   includeChildDepartments: false,
@@ -68,8 +68,8 @@ const filteredUserGroups = computed(() => filterByKeyword(userGroups.value, grou
 
 const confirmDescription = computed(() => {
   const parts: string[] = [];
-  if (form.recipientUserIds.length > 0) {
-    parts.push(`${form.recipientUserIds.length} 位用户`);
+  if (form.recipientSubjectIds.length > 0) {
+    parts.push(`${form.recipientSubjectIds.length} 位用户`);
   }
   if (form.departmentIds.length > 0) {
     parts.push(`${form.departmentIds.length} 个部门${form.includeChildDepartments ? '（含子部门）' : ''}`);
@@ -214,21 +214,21 @@ async function searchUsers() {
 }
 
 function toggleUser(user: IamUser) {
-  const index = form.recipientUserIds.indexOf(user.id);
+  const index = form.recipientSubjectIds.indexOf(user.subjectId);
   if (index >= 0) {
-    form.recipientUserIds.splice(index, 1);
-    selectedUsers.value = selectedUsers.value.filter(item => item.id !== user.id);
+    form.recipientSubjectIds.splice(index, 1);
+    selectedUsers.value = selectedUsers.value.filter(item => item.subjectId !== user.subjectId);
   } else {
-    form.recipientUserIds.push(user.id);
-    if (!selectedUsers.value.some(item => item.id === user.id)) {
+    form.recipientSubjectIds.push(user.subjectId);
+    if (!selectedUsers.value.some(item => item.subjectId === user.subjectId)) {
       selectedUsers.value.push(user);
     }
   }
 }
 
-function removeSelectedUser(userId: number) {
-  form.recipientUserIds = form.recipientUserIds.filter(id => id !== userId);
-  selectedUsers.value = selectedUsers.value.filter(item => item.id !== userId);
+function removeSelectedUser(subjectId: string) {
+  form.recipientSubjectIds = form.recipientSubjectIds.filter(id => id !== subjectId);
+  selectedUsers.value = selectedUsers.value.filter(item => item.subjectId !== subjectId);
 }
 
 function toggleId(list: number[], id: number) {
@@ -242,7 +242,7 @@ function toggleId(list: number[], id: number) {
 
 function resetForm() {
   Object.assign(form, {
-    recipientUserIds: [],
+    recipientSubjectIds: [],
     departmentIds: [],
     userGroupIds: [],
     includeChildDepartments: false,
@@ -272,7 +272,7 @@ function openComposeDrawer() {
 function requestSendMessage() {
   message.value = '';
   errorMessage.value = '';
-  if (form.recipientUserIds.length === 0 && form.departmentIds.length === 0 && form.userGroupIds.length === 0) {
+  if (form.recipientSubjectIds.length === 0 && form.departmentIds.length === 0 && form.userGroupIds.length === 0) {
     errorMessage.value = '至少选择一个发送目标';
     return;
   }
@@ -285,7 +285,7 @@ async function submitMessage() {
   errorMessage.value = '';
   try {
     const response = await createMessage({
-      recipientUserIds: form.recipientUserIds,
+      recipientSubjectIds: form.recipientSubjectIds,
       departmentIds: form.departmentIds,
       userGroupIds: form.userGroupIds,
       includeChildDepartments: form.includeChildDepartments,
@@ -412,7 +412,7 @@ onMounted(() => {
               <tr v-if="detailRecipients.length === 0">
                 <td colspan="4" class="table-empty">暂无收件人。</td>
               </tr>
-              <tr v-for="recipient in detailRecipients" :key="recipient.userId">
+              <tr v-for="recipient in detailRecipients" :key="recipient.subjectId">
                 <td>{{ recipient.displayName }}</td>
                 <td>{{ recipient.username }}</td>
                 <td><span class="status-badge" :class="recipient.readAt ? '' : 'danger'">{{ recipient.readAt ? '已读' : '未读' }}</span></td>
@@ -442,13 +442,13 @@ onMounted(() => {
             <span class="picker-group-title">指定用户{{ userSearching ? '（搜索中…）' : '' }}</span>
             <input v-model="userKeyword" type="search" placeholder="搜索用户名 / 展示名 / 邮箱" @keyup.enter="searchUsers">
             <div class="picker-options">
-              <label v-for="user in userResults" :key="user.id">
-                <input type="checkbox" :checked="form.recipientUserIds.includes(user.id)" @change="toggleUser(user)">
+              <label v-for="user in userResults" :key="user.subjectId">
+                <input type="checkbox" :checked="form.recipientSubjectIds.includes(user.subjectId)" @change="toggleUser(user)">
                 {{ user.displayName || user.username }}（{{ user.username }}）</label>
               <p v-if="userResults.length === 0" class="picker-empty">无匹配用户，调整关键词后回车再搜。</p>
             </div>
             <div v-if="selectedUsers.length > 0" class="tag-list">
-              <button v-for="user in selectedUsers" :key="user.id" type="button" @click="removeSelectedUser(user.id)">
+              <button v-for="user in selectedUsers" :key="user.subjectId" type="button" @click="removeSelectedUser(user.subjectId)">
                 {{ user.displayName || user.username }} ×
               </button>
             </div>

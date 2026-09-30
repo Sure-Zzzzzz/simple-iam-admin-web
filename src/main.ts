@@ -33,6 +33,7 @@ function createAdminRouter(base: string) {
     history: createWebHistory(base),
     routes: [
       { path: '/', component: DashboardView },
+      { path: '/sessions', redirect: { path: '/', query: { panel: 'sessions' } } },
       { path: '/organizations', component: OrganizationsView, meta: { permission: ROUTE_PERMISSIONS['/organizations'] } },
       { path: '/users', component: UsersView, meta: { permission: ROUTE_PERMISSIONS['/users'] } },
       { path: '/departments', redirect: '/organizations' },

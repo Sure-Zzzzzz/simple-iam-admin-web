@@ -26,7 +26,7 @@ export function createRuntimeRequest(request: <T>(url: string, init?: RequestIni
     request<TResponse>({ method, path, body, signal }: Parameters<RuntimeRequest['request']>[0]) {
       return request<TResponse>(path, {
         ...(method === 'GET' ? {} : { method }),
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
         ...(signal ? { signal } : {})
       });
     }

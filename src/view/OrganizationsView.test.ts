@@ -3,8 +3,9 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyAdminBridge, createRuntimeRequest } from '../adminState';
 import OrganizationsView from './OrganizationsView.vue';
+import { pickFormSelectOption } from './formSelectDriver';
 
-const adminUser = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const adminUser = { subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const root = {
   id: 10, code: 'headquarters', name: '总部', parentId: null, status: 1, sortOrder: 0, directMemberCount: 1,
   children: [{ id: 11, code: 'research', name: '研发部', parentId: 10, status: 1, sortOrder: 0, directMemberCount: 0, children: [] }]
@@ -13,7 +14,7 @@ const workspace = {
   department: { id: 10, code: 'headquarters', name: '总部', parentId: null, parentName: null, status: 1, sortOrder: 0, createdAt: '', updatedAt: '' },
   directChildren: [{ id: 11, code: 'research', name: '研发部', parentId: 10, parentName: '总部', status: 1, sortOrder: 0, createdAt: '', updatedAt: '' }],
   members: {
-    content: [{ id: 2, username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '总部', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }],
+    content: [{ id: 2, subjectId: 'sid-2', username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '总部', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }],
     totalElements: 1, totalPages: 1, number: 0, size: 50
   }
 };
@@ -45,7 +46,7 @@ function mountView() {
 const usersPage = {
   content: [
     workspace.members.content[0],
-    { id: 3, username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
+    { id: 3, subjectId: 'sid-3', username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
   ],
   totalElements: 2, totalPages: 1, number: 0, size: 100
 };
@@ -59,7 +60,7 @@ function requestForWorkbench(url: string, init?: { method?: string }) {
   if (url === '/iam/admin/organizations/tree') return Promise.resolve([root]);
   if (url === '/iam/admin/departments/10/roles') return Promise.resolve([]);
   if (url === '/iam/admin/organizations/departments/10/workspace?page=1&size=10') return Promise.resolve(workspace);
-  if (url === '/iam/admin/organizations/users/2/profile') return Promise.resolve(profile);
+  if (url === '/iam/admin/organizations/users/sid-2/profile') return Promise.resolve(profile);
   if (url === '/iam/admin/users?page=1&size=100') return Promise.resolve(usersPage);
   return Promise.resolve(undefined);
 }
@@ -95,7 +96,7 @@ describe('OrganizationsView', () => {
     await wrapper.get('tbody button').trigger('click');
     await flushPromises();
 
-    expect(request).toHaveBeenCalledWith('/iam/admin/organizations/users/2/profile', {});
+    expect(request).toHaveBeenCalledWith('/iam/admin/organizations/users/sid-2/profile', {});
     expect(wrapper.get('.drawer-header h2').text()).toBe('爱丽丝');
     expect(wrapper.text()).toContain('通知组');
     expect(wrapper.text()).toContain('运营角色');
@@ -120,12 +121,12 @@ describe('OrganizationsView', () => {
 
     expect(request).toHaveBeenCalledWith('/iam/admin/departments', {
       method: 'POST',
-      body: JSON.stringify({ code: 'platform', name: '平台部', parentId: 10, sortOrder: 0, status: 1, memberIds: [] })
+      body: JSON.stringify({ code: 'platform', name: '平台部', parentId: 10, sortOrder: 0, status: 1, memberSubjectIds: [] })
     });
     expect(wrapper.find('.entity-drawer').exists()).toBe(false);
   });
 
-  it('创建部门时勾选已有成员应随创建提交 memberIds', async () => {
+  it('创建部门时勾选已有成员应随创建提交 memberSubjectIds', async () => {
     const request = vi.fn().mockImplementation((url: string, init?: { method?: string }) => {
       if (init?.method === 'POST' && url === '/iam/admin/departments') {
         return Promise.resolve({ id: 12, code: 'platform', name: '平台部', parentId: 10, status: 1, sortOrder: 0 });
@@ -154,7 +155,7 @@ describe('OrganizationsView', () => {
 
     expect(request).toHaveBeenCalledWith('/iam/admin/departments', {
       method: 'POST',
-      body: JSON.stringify({ code: 'platform', name: '平台部', parentId: 10, sortOrder: 0, status: 1, memberIds: [3] })
+      body: JSON.stringify({ code: 'platform', name: '平台部', parentId: 10, sortOrder: 0, status: 1, memberSubjectIds: ['sid-3'] })
     });
   });
 
@@ -208,7 +209,7 @@ describe('OrganizationsView', () => {
 
     expect(request).toHaveBeenCalledWith('/iam/admin/departments', {
       method: 'POST',
-      body: JSON.stringify({ code: 'headquarters', name: '总部', parentId: null, sortOrder: 0, status: 1, memberIds: [] })
+      body: JSON.stringify({ code: 'headquarters', name: '总部', parentId: null, sortOrder: 0, status: 1, memberSubjectIds: [] })
     });
     expect(wrapper.text()).toContain('根部门已创建');
   });
@@ -245,8 +246,10 @@ describe('OrganizationsView', () => {
 
     await wrapper.findAll('button').find(button => button.text() === '编辑部门')!.trigger('click');
     const drawer = wrapper.get('.entity-drawer');
-    const parentSelect = drawer.findAll('select')[0];
-    const options = parentSelect.findAll('option');
+    const parentToggle = drawer.findAll('.form-select-toggle')
+      .find(node => node.attributes('aria-label') === '上级部门')!;
+    await parentToggle.trigger('click');
+    const options = drawer.findAll('.form-select-option');
     expect(options.length).toBe(1);
     expect(options[0].text()).toBe('未分配（作为根部门）');
   });
@@ -292,8 +295,7 @@ describe('OrganizationsView', () => {
 
     const filterBar = wrapper.get('.user-filter-bar');
     await filterBar.find('input[type="search"]').setValue('alice');
-    await filterBar.find('select').setValue('1');
-    await filterBar.get('select').trigger('change');
+    await pickFormSelectOption(wrapper, { ariaLabel: '成员状态筛选' }, '启用');
     await flushPromises();
 
     expect(request).toHaveBeenCalledWith('/iam/admin/organizations/departments/10/workspace?page=1&size=10&status=1&keyword=alice', {});
@@ -329,7 +331,7 @@ describe('OrganizationsView', () => {
   it('创建成员应提交邮箱与手机号', async () => {
     const request = vi.fn().mockImplementation((url: string, init?: { method?: string }) => {
       if (init?.method === 'POST' && url === '/iam/admin/users') {
-        return Promise.resolve({ id: 9, username: 'carol', displayName: '卡罗尔', departmentId: 10 });
+        return Promise.resolve({ id: 9, subjectId: 'sid-9', username: 'carol', displayName: '卡罗尔', departmentId: 10 });
       }
       return requestForWorkbench(url, init);
     });
@@ -357,7 +359,7 @@ describe('OrganizationsView', () => {
 
   it('添加已有成员应把选中用户挂到当前部门', async () => {
     const request = vi.fn().mockImplementation((url: string, init?: { method?: string }) => {
-      if (init?.method === 'PUT' && url === '/iam/admin/users/3') return Promise.resolve({ ...usersPage.content[1], departmentId: 10, departmentName: '总部' });
+      if (init?.method === 'PUT' && url === '/iam/admin/users/sid-3') return Promise.resolve({ ...usersPage.content[1], departmentId: 10, departmentName: '总部' });
       return requestForWorkbench(url, init);
     });
     applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), refreshCurrentUser: async () => adminUser, refreshUnreadCount: async () => undefined, onUnauthorized: () => undefined });
@@ -376,7 +378,7 @@ describe('OrganizationsView', () => {
     await drawer.get('form').trigger('submit.prevent');
     await flushPromises();
 
-    expect(request).toHaveBeenCalledWith('/iam/admin/users/3', {
+    expect(request).toHaveBeenCalledWith('/iam/admin/users/sid-3', {
       method: 'PUT',
       body: JSON.stringify({ displayName: '鲍勃', email: '', phone: '', departmentId: 10, clearDepartment: false })
     });
@@ -385,7 +387,7 @@ describe('OrganizationsView', () => {
 
   it('移除成员应清空归属且不影响账号', async () => {
     const request = vi.fn().mockImplementation((url: string, init?: { method?: string }) => {
-      if (init?.method === 'PUT' && url === '/iam/admin/users/2') return Promise.resolve({ ...workspace.members.content[0], departmentId: null, departmentName: null });
+      if (init?.method === 'PUT' && url === '/iam/admin/users/sid-2') return Promise.resolve({ ...workspace.members.content[0], departmentId: null, departmentName: null });
       return requestForWorkbench(url, init);
     });
     applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), refreshCurrentUser: async () => adminUser, refreshUnreadCount: async () => undefined, onUnauthorized: () => undefined });
@@ -401,7 +403,7 @@ describe('OrganizationsView', () => {
     await dialog.findAll('button').find(button => button.text() === '确认移出')!.trigger('click');
     await flushPromises();
 
-    expect(request).toHaveBeenCalledWith('/iam/admin/users/2', {
+    expect(request).toHaveBeenCalledWith('/iam/admin/users/sid-2', {
       method: 'PUT',
       body: JSON.stringify({ displayName: '爱丽丝', email: '', phone: '', departmentId: null, clearDepartment: true })
     });

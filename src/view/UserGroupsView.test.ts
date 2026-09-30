@@ -2,10 +2,11 @@ import { DOMWrapper, flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyAdminBridge, createRuntimeRequest } from '../adminState';
 import UserGroupsView from './UserGroupsView.vue';
+import { pickFormSelectOption } from './formSelectDriver';
 
 const opsGroup = { id: 1, code: 'ops', name: '运营组', description: '运营通知', status: 1, createdAt: '', updatedAt: '' };
-const alice = { id: 2, username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 1, departmentName: '总部', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
-const bob = { id: 3, username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
+const alice = { id: 2, subjectId: 'sid-2', username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 1, departmentName: '总部', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
+const bob = { id: 3, subjectId: 'sid-3', username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
 
 function makeGroupsPage(page = 1) {
   return {
@@ -22,14 +23,14 @@ function makeGroupsPage(page = 1) {
 }
 
 const usersPage = { content: [alice, bob], totalElements: 11, totalPages: 2, page: 1, size: 10, numberOfElements: 2, first: true, last: false, empty: false };
-const carol = { id: 4, username: 'carol', displayName: '卡罗尔', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
+const carol = { id: 4, subjectId: 'sid-4', username: 'carol', displayName: '卡罗尔', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
 const usersPage2 = { content: [carol], totalElements: 11, totalPages: 2, page: 2, size: 10, numberOfElements: 1, first: false, last: true, empty: false };
 
 function applyBridge(request: ReturnType<typeof vi.fn>) {
   applyAdminBridge({
-    currentUser: { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] },
+    currentUser: { subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] },
     request: createRuntimeRequest(request),
-    refreshCurrentUser: async () => ({ userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] }),
+    refreshCurrentUser: async () => ({ subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] }),
     refreshUnreadCount: async () => undefined,
     onUnauthorized: () => undefined
   });
@@ -92,7 +93,7 @@ describe('UserGroupsView', () => {
     await flushPromises();
     expect(urls.at(-1)).toBe('/iam/admin/user-groups/page?page=1&size=10&keyword=ops');
 
-    await bar.get('select').setValue('1');
+    await pickFormSelectOption(wrapper, { ariaLabel: '协作组状态筛选' }, '启用');
     await flushPromises();
     expect(urls.at(-1)).toBe('/iam/admin/user-groups/page?page=1&size=10&status=1&keyword=ops');
 
@@ -236,10 +237,10 @@ describe('UserGroupsView', () => {
     let groupUsers: Array<typeof alice | typeof bob> = [alice];
     const request = baseRequest();
     request.mockImplementation((url: string, init?: { method?: string }) => {
-      if (init?.method === 'POST' && url === '/iam/admin/user-groups/1/users/3') {
+      if (init?.method === 'POST' && url === '/iam/admin/user-groups/1/users/sid-3') {
         return Promise.resolve(undefined);
       }
-      if (init?.method === 'DELETE' && url === '/iam/admin/user-groups/1/users/2') {
+      if (init?.method === 'DELETE' && url === '/iam/admin/user-groups/1/users/sid-2') {
         return Promise.resolve(undefined);
       }
       if (url.startsWith('/iam/admin/users?')) {
@@ -290,7 +291,7 @@ describe('UserGroupsView', () => {
     groupUsers = [alice, bob];
     await addButton!.trigger('click');
     await flushPromises();
-    expect(request).toHaveBeenCalledWith('/iam/admin/user-groups/1/users/3', { method: 'POST' });
+    expect(request).toHaveBeenCalledWith('/iam/admin/user-groups/1/users/sid-3', { method: 'POST' });
     expect(wrapper.text()).toContain('成员已添加');
 
     drawer = teleported('.entity-drawer');
@@ -305,7 +306,7 @@ describe('UserGroupsView', () => {
     await confirmButton!.trigger('click');
     await flushPromises();
 
-    expect(request).toHaveBeenCalledWith('/iam/admin/user-groups/1/users/2', { method: 'DELETE' });
+    expect(request).toHaveBeenCalledWith('/iam/admin/user-groups/1/users/sid-2', { method: 'DELETE' });
     expect(wrapper.text()).toContain('成员已移除');
   });
 });

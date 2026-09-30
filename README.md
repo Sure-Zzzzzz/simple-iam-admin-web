@@ -10,9 +10,16 @@ IAM 管理端微前端，承载用户、组织、角色、权限、可信应用�
 
 ## 兼容性与发布
 
-- IAM Server：`1.1.x`
-- IAM Contract：`1.1.x`
+| 组件 | 版本 |
+| --- | --- |
+| IAM Admin Web | `1.2.0` |
+| IAM Server | `1.3.0`（兼容 `1.3.x` 的向后兼容 patch） |
+| IAM Contract | `1.3.0`（兼容 `1.3.x` 的向后兼容 patch） |
+| Unified Application Portal Web | `1.2.0` |
+| IAM Theme Contract | `1.0.3` |
+| Frontend Contract | `1.0.0` |
 - `1.1.0` 对齐 IAM Server `1.1.0` 的递归菜单树、页面权限裁剪、沉浸展示、应用默认入口与 Portal 登录首页。
+- `1.2.0` 对齐 IAM Server `1.3.0` 的 subjectId、用户 Excel 导入、资源校验客户端和所属人继承配置契约。
 - 后续 Admin patch 可独立发布，但必须在 release notes 中声明兼容的 Server、Contract 与 Portal 范围。
 
 权威 API 契约由 IAM Server 仓库的 `sdk/auth/iam/server/contract/` 维护；不得调用未声明接口。

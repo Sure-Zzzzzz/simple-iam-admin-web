@@ -22,6 +22,7 @@ import {
   fetchPortalApplicationOrder,
   fetchDashboardRecentLogins,
   fetchTrustedApplication,
+  fetchTrustedApplicationOwnerInheritance,
   fetchTrustedApplicationClients,
   fetchTrustedApplications,
   fetchCurrentUser,
@@ -45,6 +46,7 @@ import {
   revokeUserRole,
   setAdminRequestBridge,
   updateTrustedApplication,
+  updateTrustedApplicationOwnerInheritance,
   updateTrustedApplicationClient,
   updateDepartment,
   updatePortalApplicationOrder,
@@ -72,6 +74,25 @@ describe('admin iamAuth api', () => {
     expect(JSON.stringify(page)).not.toContain('passwordHash');
   });
 
+  it('可信应用 AKU 所属人授权继承应读取并更新独立状态', async () => {
+    const state = { applicationId: 7, enabled: false, applicationAuthorizationEpoch: 2 };
+    const bridge = vi.fn()
+      .mockResolvedValueOnce(state)
+      .mockResolvedValueOnce({ ...state, enabled: true, applicationAuthorizationEpoch: 3 });
+    setAdminRequestBridge(bridge);
+
+    await expect(fetchTrustedApplicationOwnerInheritance(7)).resolves.toEqual(state);
+    await expect(updateTrustedApplicationOwnerInheritance(7, true)).resolves.toEqual({
+      ...state,
+      enabled: true,
+      applicationAuthorizationEpoch: 3
+    });
+    expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/trusted-applications/7/owner-inheritance', {});
+    expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/trusted-applications/7/owner-inheritance?enabled=true', {
+      method: 'PUT'
+    });
+  });
+
   it('createUser 应通过 portal bridge 提交 JSON 创建用户', async () => {
     const bridge = vi.fn().mockResolvedValue({ id: 2, username: 'user' });
     setAdminRequestBridge(bridge);
@@ -89,14 +110,14 @@ describe('admin iamAuth api', () => {
     const bridge = vi.fn().mockResolvedValue(undefined);
     setAdminRequestBridge(bridge);
 
-    await resetUserPassword(1, 'New@1234');
-    await deleteUser(1);
+    await resetUserPassword('sid-1', 'New@1234');
+    await deleteUser('sid-1');
 
-    expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/users/1/reset-password', {
+    expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/users/sid-1/reset-password', {
       method: 'PUT',
       body: JSON.stringify({ newPassword: 'New@1234' })
     });
-    expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/users/1', { method: 'DELETE' });
+    expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/users/sid-1', { method: 'DELETE' });
   });
 
   it('fetchRoles 应通过 portal bridge 读取角色列表', async () => {
@@ -124,11 +145,11 @@ describe('admin iamAuth api', () => {
     const bridge = vi.fn().mockResolvedValue({ recipientCount: 2 });
     setAdminRequestBridge(bridge);
 
-    await createMessage({ recipientUserIds: [2, 3], departmentIds: [4], userGroupIds: [5], includeChildDepartments: true, title: '通知', content: '内容' });
+    await createMessage({ recipientSubjectIds: ['sid-2', 'sid-3'], departmentIds: [4], userGroupIds: [5], includeChildDepartments: true, title: '通知', content: '内容' });
 
     expect(bridge).toHaveBeenCalledWith('/iam/admin/messages', {
       method: 'POST',
-      body: JSON.stringify({ recipientUserIds: [2, 3], departmentIds: [4], userGroupIds: [5], includeChildDepartments: true, title: '通知', content: '内容' })
+      body: JSON.stringify({ recipientSubjectIds: ['sid-2', 'sid-3'], departmentIds: [4], userGroupIds: [5], includeChildDepartments: true, title: '通知', content: '内容' })
     });
     expect(bridge.mock.calls.map(call => call[0])).not.toContain('/iam/web/messages');
   });
@@ -155,8 +176,8 @@ describe('admin iamAuth api', () => {
     await createUserGroup({ code: 'ops', name: '运营组', description: '', status: 1 });
     await updateUserGroup(2, { name: '运营通知组', description: '通知', status: 1 });
     await fetchUserGroupUsers(2);
-    await assignUserGroupUser(2, 3);
-    await revokeUserGroupUser(2, 3);
+    await assignUserGroupUser(2, 'sid-3');
+    await revokeUserGroupUser(2, 'sid-3');
 
     expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/departments', {});
     expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/departments', { method: 'POST', body: JSON.stringify({ code: 'tech', name: '技术部', parentId: null, sortOrder: 0, status: 1 }) });
@@ -166,8 +187,8 @@ describe('admin iamAuth api', () => {
     expect(bridge).toHaveBeenNthCalledWith(6, '/iam/admin/user-groups', { method: 'POST', body: JSON.stringify({ code: 'ops', name: '运营组', description: '', status: 1 }) });
     expect(bridge).toHaveBeenNthCalledWith(7, '/iam/admin/user-groups/2', { method: 'PUT', body: JSON.stringify({ name: '运营通知组', description: '通知', status: 1 }) });
     expect(bridge).toHaveBeenNthCalledWith(8, '/iam/admin/user-groups/2/users', {});
-    expect(bridge).toHaveBeenNthCalledWith(9, '/iam/admin/user-groups/2/users/3', { method: 'POST' });
-    expect(bridge).toHaveBeenNthCalledWith(10, '/iam/admin/user-groups/2/users/3', { method: 'DELETE' });
+    expect(bridge).toHaveBeenNthCalledWith(9, '/iam/admin/user-groups/2/users/sid-3', { method: 'POST' });
+    expect(bridge).toHaveBeenNthCalledWith(10, '/iam/admin/user-groups/2/users/sid-3', { method: 'DELETE' });
   });
 
   it('portal bridge 返回未登录时应触发统一未授权处理', async () => {
@@ -212,13 +233,13 @@ describe('admin iamAuth api', () => {
       .mockResolvedValueOnce([]);
     setAdminRequestBridge(bridge);
 
-    await expect(fetchUserRoles(2)).resolves.toHaveLength(1);
-    await assignUserRole(2, 1);
-    await revokeUserRole(2, 1);
+    await expect(fetchUserRoles('sid-2')).resolves.toHaveLength(1);
+    await assignUserRole('sid-2', 1);
+    await revokeUserRole('sid-2', 1);
 
-    expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/users/2/roles', {});
-    expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/users/2/roles/1', { method: 'POST' });
-    expect(bridge).toHaveBeenNthCalledWith(3, '/iam/admin/users/2/roles/1', { method: 'DELETE' });
+    expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/users/sid-2/roles', {});
+    expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/users/sid-2/roles/1', { method: 'POST' });
+    expect(bridge).toHaveBeenNthCalledWith(3, '/iam/admin/users/sid-2/roles/1', { method: 'DELETE' });
   });
 
   it('权限清单 GET 已登记返回详情、未登记消息归一为 null，PUT 全量提交三类码与 DATA 资源', async () => {
@@ -258,11 +279,11 @@ describe('admin iamAuth api', () => {
     const bridge = vi.fn().mockResolvedValue(undefined);
     setAdminRequestBridge(bridge);
 
-    await grantUserApplication(2, 7, {
+    await grantUserApplication('sid-2', 7, {
       roles: ['app-user'], pagePermissions: [], apiPermissions: [], dataGrantDocument: null
     });
 
-    expect(bridge).toHaveBeenCalledWith('/iam/admin/users/2/application-authorizations/7', {
+    expect(bridge).toHaveBeenCalledWith('/iam/admin/users/sid-2/application-authorizations/7', {
       method: 'PUT',
       body: JSON.stringify({ admitted: true, roles: ['app-user'], pagePermissions: [], apiPermissions: [], dataGrantDocument: null })
     });
@@ -416,13 +437,13 @@ describe('admin iamAuth api', () => {
 
     await fetchAdminDashboard();
     await fetchDashboardRecentLogins({ page: 2, size: 5 });
-    await fetchActiveSessions({ userId: 9, page: 1, size: 20 });
-    await revokeUserSessions(9);
+    await fetchActiveSessions({ subjectId: 'sid-9', page: 1, size: 20 });
+    await revokeUserSessions('sid-9');
 
     expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/dashboard', {});
     expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/dashboard/recent-logins?page=2&size=5', {});
-    expect(bridge).toHaveBeenNthCalledWith(3, '/iam/admin/sessions?page=1&size=20&userId=9', {});
-    expect(bridge).toHaveBeenNthCalledWith(4, '/iam/admin/sessions/users/9/revoke', { method: 'PUT' });
+    expect(bridge).toHaveBeenNthCalledWith(3, '/iam/admin/sessions?page=1&size=20&subjectId=sid-9', {});
+    expect(bridge).toHaveBeenNthCalledWith(4, '/iam/admin/sessions/users/sid-9/revoke', { method: 'PUT' });
   });
 
   it('fetchUsers 应把最近登录与锁定筛选序列化为 ISO-8601 查询参数', async () => {
@@ -460,6 +481,6 @@ describe('admin iamAuth api', () => {
       return { ok: true, status: 200, text: () => Promise.resolve('') };
     }));
 
-    await expect(assignUserRole(2, 6)).resolves.toBeUndefined();
+    await expect(assignUserRole('sid-2', 6)).resolves.toBeUndefined();
   });
 });

@@ -10,6 +10,7 @@ const PAGES = [
   { name: 'login', url: 'http://localhost:8179/login' },
   { name: 'portal-home', url: 'http://localhost:8179/' },
   { name: 'iam-dashboard', url: 'http://localhost:8179/app/iam/' },
+  { name: 'iam-sessions', url: 'http://localhost:8179/app/iam/sessions' },
   { name: 'iam-users', url: 'http://localhost:8179/app/iam/users' },
   { name: 'iam-roles', url: 'http://localhost:8179/app/iam/roles' },
   { name: 'iam-permissions', url: 'http://localhost:8179/app/iam/permissions' },

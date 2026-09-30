@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import EntityDrawer from '../components/EntityDrawer.vue';
+import FormSelect, { type FormSelectOption } from '@sure-zzzzzz/simple-iam-theme-contract/FormSelect';
 import Pagination from '@sure-zzzzzz/simple-iam-theme-contract/Pagination';
 import {
   assignUserRole,
@@ -23,6 +24,7 @@ import {
   fetchUsers,
   grantUserApplication,
   identitySourceLabel,
+  importUsers,
   resetUserPassword,
   revokeUserApplication,
   revokeUserRole,
@@ -73,6 +75,8 @@ const bindForm = reactive({ providerCode: '', externalId: '' });
 const loading = ref(false);
 const message = ref('');
 const errorMessage = ref('');
+const importInput = ref<HTMLInputElement | null>(null);
+const importPending = ref(false);
 
 const filterForm = reactive({
   keyword: '',
@@ -119,6 +123,19 @@ function lockedUntilLabel(user: IamUser): string {
 const createDrawerOpen = ref(false);
 const createPending = ref(false);
 
+/**
+ * 手机号展示格式化（管理员受信可见完整号；区号与号码间加空格提升可读性）。
+ */
+function formatPhone(phone: string | null): string {
+  if (!phone) {
+    return '—';
+  }
+  if (phone.startsWith('+86')) {
+    return `+86 ${phone.slice(3)}`;
+  }
+  return phone;
+}
+
 const createForm = reactive({
   username: '',
   password: '',
@@ -146,6 +163,31 @@ const editForm = reactive({
   departmentId: '',
   newPassword: ''
 });
+
+const userStatusOptions: FormSelectOption[] = [
+  { label: '全部状态', value: '' },
+  { label: '启用', value: '1' },
+  { label: '禁用', value: '0' }
+];
+const userViewOptions: FormSelectOption[] = [
+  { label: '全部用户', value: '' },
+  { label: '今日登录', value: 'today' },
+  { label: '锁定中', value: 'locked' },
+  { label: '未挂部门', value: 'noDepartment' }
+];
+const departmentSelectOptions = computed<FormSelectOption[]>(() => [
+  { label: '未分配部门', value: '' },
+  ...departments.value.map(department => ({
+    label: `${department.name}（${department.code}）`,
+    value: String(department.id)
+  }))
+]);
+const loginProviderOptions = computed<FormSelectOption[]>(() =>
+  loginProviders.value.map(provider => ({
+    label: `${provider.displayName || provider.code}（${provider.code}）`,
+    value: provider.code
+  }))
+);
 
 const assignableRoles = computed(() => {
   const assigned = new Set(selectedUserRoles.value.map(role => role.id));
@@ -263,7 +305,7 @@ async function loadUsers() {
     departments.value = departmentList;
     trustedApplications.value = applicationList;
     if (selectedUser.value) {
-      const latest = users.value.find(user => user.id === selectedUser.value?.id);
+      const latest = users.value.find(user => user.subjectId === selectedUser.value?.subjectId);
       if (latest) {
         await selectUser(latest);
       }
@@ -299,6 +341,34 @@ async function submitCreateUser() {
   }
 }
 
+function downloadUserImportTemplate() {
+  window.location.assign('/iam/admin/users/import/template');
+}
+
+function chooseUserImportFile() {
+  importInput.value?.click();
+}
+
+async function submitUserImport(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  importPending.value = true;
+  message.value = '';
+  errorMessage.value = '';
+  try {
+    const result = await importUsers(file);
+    const failed = result.totalRows - result.createdRows;
+    message.value = `导入完成：成功 ${result.createdRows} 行，失败 ${failed} 行`;
+    if (failed) errorMessage.value = result.rows.filter(row => !row.created).map(row => `第${row.rowNumber}行：${row.message}`).join('；');
+    await loadUsers();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '导入用户失败';
+  } finally {
+    importPending.value = false;
+    if (importInput.value) importInput.value.value = '';
+  }
+}
+
 async function selectUser(user: IamUser) {
   selectedUser.value = user;
   Object.assign(editForm, {
@@ -309,9 +379,9 @@ async function selectUser(user: IamUser) {
     newPassword: ''
   });
   const [roleList, authorizationList] = await Promise.all([
-    fetchUserRoles(user.id),
+    fetchUserRoles(user.subjectId),
     canReadTrustedApplicationCatalog.value
-      ? fetchUserApplicationAuthorizations(user.id)
+      ? fetchUserApplicationAuthorizations(user.subjectId)
       : Promise.resolve([])
   ]);
   selectedUserRoles.value = roleList;
@@ -325,7 +395,7 @@ async function submitUpdateUser() {
   message.value = '';
   errorMessage.value = '';
   try {
-    const updated = await updateUser(selectedUser.value.id, {
+    const updated = await updateUser(selectedUser.value.subjectId, {
       displayName: editForm.displayName,
       email: editForm.email,
       phone: editForm.phone,
@@ -347,10 +417,10 @@ async function toggleUser(user: IamUser) {
   errorMessage.value = '';
   try {
     if (user.status === 1) {
-      await disableUser(user.id);
+      await disableUser(user.subjectId);
       message.value = '用户已禁用';
     } else {
-      await enableUser(user.id);
+      await enableUser(user.subjectId);
       message.value = '用户已启用';
     }
     await loadUsers();
@@ -363,7 +433,7 @@ async function unlockUserAction(user: IamUser) {
   message.value = '';
   errorMessage.value = '';
   try {
-    await unlockUser(user.id);
+    await unlockUser(user.subjectId);
     message.value = `已解锁 ${user.username}，可立即重新登录`;
     await loadUsers();
   } catch (error) {
@@ -384,10 +454,10 @@ async function confirmDeleteUser() {
   }
   deleteUserPending.value = true;
   try {
-    await deleteUser(target.id);
+    await deleteUser(target.subjectId);
     deleteUserTarget.value = null;
     message.value = `已删除用户 ${target.username}`;
-    if (selectedUser.value?.id === target.id) {
+    if (selectedUser.value?.subjectId === target.subjectId) {
       selectedUser.value = null;
     }
     await loadUsers();
@@ -406,7 +476,7 @@ async function submitResetPassword() {
   message.value = '';
   errorMessage.value = '';
   try {
-    await resetUserPassword(selectedUser.value.id, editForm.newPassword);
+    await resetUserPassword(selectedUser.value.subjectId, editForm.newPassword);
     editForm.newPassword = '';
     message.value = '密码已重置';
   } catch (error) {
@@ -421,8 +491,8 @@ async function assignRole(roleId: number) {
   message.value = '';
   errorMessage.value = '';
   try {
-    await assignUserRole(selectedUser.value.id, roleId);
-    selectedUserRoles.value = await fetchUserRoles(selectedUser.value.id);
+    await assignUserRole(selectedUser.value.subjectId, roleId);
+    selectedUserRoles.value = await fetchUserRoles(selectedUser.value.subjectId);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '分配角色失败';
   }
@@ -435,8 +505,8 @@ async function revokeRole(roleId: number) {
   message.value = '';
   errorMessage.value = '';
   try {
-    await revokeUserRole(selectedUser.value.id, roleId);
-    selectedUserRoles.value = await fetchUserRoles(selectedUser.value.id);
+    await revokeUserRole(selectedUser.value.subjectId, roleId);
+    selectedUserRoles.value = await fetchUserRoles(selectedUser.value.subjectId);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '移除角色失败';
   }
@@ -446,7 +516,7 @@ async function refreshAuthorizations() {
   if (!selectedUser.value) {
     return;
   }
-  selectedUserAuthorizations.value = await fetchUserApplicationAuthorizations(selectedUser.value.id);
+  selectedUserAuthorizations.value = await fetchUserApplicationAuthorizations(selectedUser.value.subjectId);
 }
 
 async function openGrantDrawer(application: TrustedApplication, existing: UserApplicationAuthorization | null) {
@@ -470,7 +540,7 @@ async function openGrantDrawer(application: TrustedApplication, existing: UserAp
     } else {
       grantManifest.value = manifest;
       if (existing) {
-        const detail = await fetchUserApplicationAuthorization(selectedUser.value.id, application.id);
+        const detail = await fetchUserApplicationAuthorization(selectedUser.value.subjectId, application.id);
         grantSelectedRoles.value = new Set(detail.roles);
         grantSelectedPagePermissions.value = new Set(detail.pagePermissions);
         grantSelectedApiPermissions.value = new Set(detail.apiPermissions);
@@ -505,7 +575,7 @@ async function submitGrant() {
   errorMessage.value = '';
   grantPending.value = true;
   try {
-    await grantUserApplication(selectedUser.value.id, grantTargetApplication.value.id, {
+    await grantUserApplication(selectedUser.value.subjectId, grantTargetApplication.value.id, {
       roles: [...grantSelectedRoles.value],
       pagePermissions: [...grantSelectedPagePermissions.value],
       apiPermissions: [...grantSelectedApiPermissions.value],
@@ -532,7 +602,7 @@ async function submitBindExternal() {
   message.value = '';
   errorMessage.value = '';
   try {
-    await bindExternalIdentity(selectedUser.value.id, bindForm.providerCode, bindForm.externalId.trim());
+    await bindExternalIdentity(selectedUser.value.subjectId, bindForm.providerCode, bindForm.externalId.trim());
     Object.assign(bindForm, { providerCode: '', externalId: '' });
     message.value = '外部身份已绑定';
     await loadUsers();
@@ -547,7 +617,7 @@ async function confirmUnbindExternal() {
   }
   unbindPending.value = true;
   try {
-    await unbindExternalIdentity(selectedUser.value.id);
+    await unbindExternalIdentity(selectedUser.value.subjectId);
     message.value = '外部身份已解绑，该用户回退为本地密码登录';
     unbindConfirmOpen.value = false;
     await loadUsers();
@@ -569,7 +639,7 @@ async function confirmRevokeApplication() {
   }
   revokeApplicationPending.value = true;
   try {
-    await revokeUserApplication(selectedUser.value.id, revokeApplicationTarget.value.id);
+    await revokeUserApplication(selectedUser.value.subjectId, revokeApplicationTarget.value.id);
     message.value = `已撤销 ${revokeApplicationTarget.value.applicationName} 的授权`;
     revokeApplicationTarget.value = null;
     await refreshAuthorizations();
@@ -603,9 +673,14 @@ watch(() => route.query, () => {
     <AdminPageHeader
       title="用户管理"
       description="创建用户、维护部门和基础信息、启停账号、重置密码和分配角色。"
-      primary-label="创建用户"
-      @primary="createDrawerOpen = true"
-    />
+    >
+      <template #actions>
+        <button class="button-secondary" type="button" @click="downloadUserImportTemplate">下载导入模板</button>
+        <button class="button-secondary" type="button" :disabled="importPending" @click="chooseUserImportFile">{{ importPending ? '正在导入…' : '导入用户' }}</button>
+        <button class="button-primary" type="button" @click="createDrawerOpen = true">创建用户</button>
+      </template>
+    </AdminPageHeader>
+    <input ref="importInput" class="sr-only" type="file" accept=".xlsx" @change="submitUserImport">
     <p v-if="message" class="admin-message success" role="status">{{ message }}</p>
     <p v-if="errorMessage" class="admin-message error" role="alert">{{ errorMessage }}</p>
     <p v-if="hasRestrictedUserTools" class="assignment-empty">
@@ -622,17 +697,8 @@ watch(() => route.query, () => {
             placeholder="搜索用户名 / 显示名 / 邮箱"
             @keyup.enter="searchUsers"
           >
-          <select v-model="filterForm.status" @change="searchUsers">
-            <option value="">全部状态</option>
-            <option value="1">启用</option>
-            <option value="0">禁用</option>
-          </select>
-          <select v-model="filterForm.view" @change="searchUsers">
-            <option value="">全部用户</option>
-            <option value="today">今日登录</option>
-            <option value="locked">锁定中</option>
-            <option value="noDepartment">未挂部门</option>
-          </select>
+          <FormSelect v-model="filterForm.status" :options="userStatusOptions" aria-label="用户状态筛选" @change="searchUsers" />
+          <FormSelect v-model="filterForm.view" :options="userViewOptions" aria-label="用户视图筛选" @change="searchUsers" />
           <div class="admin-page-actions">
             <button class="button-primary" type="button" :disabled="loading" @click="searchUsers">查询</button>
             <button class="button-secondary" type="button" :disabled="loading" @click="resetFilters">重置</button>
@@ -653,7 +719,7 @@ watch(() => route.query, () => {
             </colgroup>
             <thead>
               <tr>
-                <th>用户</th>
+                <th>用户 / 主体 ID</th>
                 <th>部门</th>
                 <th>邮箱</th>
                 <th>手机号</th>
@@ -665,16 +731,17 @@ watch(() => route.query, () => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="user in users" :key="user.id">
+              <tr v-for="user in users" :key="user.subjectId">
                 <td>
                   <button class="table-primary-action" type="button" @click="selectUser(user)">
                     <strong>{{ user.displayName || user.username }}</strong>
                     <span>{{ user.username }}</span>
+                    <span class="user-subject-id" :title="user.subjectId">{{ user.subjectId }}</span>
                   </button>
                 </td>
                 <td class="cell-ellipsis" :title="user.departmentName || ''">{{ user.departmentName || '—' }}</td>
                 <td class="cell-ellipsis" :title="user.email || ''">{{ user.email || '—' }}</td>
-                <td>{{ user.phone || '—' }}</td>
+                <td class="cell-nowrap">{{ formatPhone(user.phone) }}</td>
                 <td>{{ identitySourceLabel(user.identitySource) }}</td>
                 <td>
                   <span v-if="isLocked(user)" class="status-badge danger">锁定至 {{ lockedUntilLabel(user) }}</span>
@@ -727,15 +794,12 @@ watch(() => route.query, () => {
           </label>
           <label>
             <span>手机号</span>
-            <input v-model="editForm.phone" placeholder="手机号">
+            <input v-model="editForm.phone" placeholder="+8613800000000 或 13800000000">
+            <small class="field-hint">国内 11 位手机号自动补 +86，也可填完整 +E.164 国际形态</small>
           </label>
           <label>
             <span>部门</span>
-            <select v-if="canReadDepartmentCatalog" v-model="editForm.departmentId">
-              <option value="">未分配部门</option>
-              <option v-for="department in departments" :key="department.id" :value="String(department.id)">
-                {{ department.name }}（{{ department.code }}）              </option>
-            </select>
+            <FormSelect v-if="canReadDepartmentCatalog" v-model="editForm.departmentId" :options="departmentSelectOptions" aria-label="部门" />
             <span v-else class="assignment-empty">{{ selectedUser.departmentName || '未分配部门' }}（当前角色不能变更部门）</span>
           </label>
           <button type="submit">保存基础信息</button>
@@ -772,11 +836,7 @@ watch(() => route.query, () => {
         <form v-else class="drawer-form" @submit.prevent="submitBindExternal">
           <label>
             <span>登录方式</span>
-            <select v-model="bindForm.providerCode" required>
-              <option value="" disabled>选择登录方式</option>
-              <option v-for="provider in loginProviders" :key="provider.code" :value="provider.code">
-                {{ provider.displayName || provider.code }}（{{ provider.code }}）              </option>
-            </select>
+            <FormSelect v-model="bindForm.providerCode" :options="loginProviderOptions" aria-label="登录方式" placeholder="选择登录方式" />
           </label>
           <label>
             <span>外部唯一标识</span>
@@ -858,7 +918,7 @@ watch(() => route.query, () => {
     >
       <form class="drawer-form" @submit.prevent="submitCreateUser">
         <label>
-          <span>用户已启用</span>
+          <span>用户名</span>
           <input v-model="createForm.username" required placeholder="用户名">
         </label>
         <label>
@@ -875,15 +935,12 @@ watch(() => route.query, () => {
         </label>
         <label>
           <span>手机号</span>
-          <input v-model="createForm.phone" placeholder="手机号">
+          <input v-model="createForm.phone" placeholder="+8613800000000 或 13800000000">
+          <small class="field-hint">国内 11 位手机号自动补 +86，也可填完整 +E.164 国际形态</small>
         </label>
         <label>
           <span>所属部门</span>
-          <select v-if="canReadDepartmentCatalog" v-model="createForm.departmentId">
-            <option value="">未分配部门</option>
-            <option v-for="department in departments" :key="department.id" :value="String(department.id)">
-              {{ department.name }}（{{ department.code }}）            </option>
-          </select>
+          <FormSelect v-if="canReadDepartmentCatalog" v-model="createForm.departmentId" :options="departmentSelectOptions" aria-label="所属部门" />
           <span v-else class="assignment-empty">当前角色无组织目录访问权限，新建用户将不挂部门。</span>
         </label>
         <footer class="drawer-actions">

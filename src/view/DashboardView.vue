@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { adminState } from '../adminState';
 import {
   fetchAdminDashboard,
@@ -39,6 +40,8 @@ const revokeTarget = ref<AdminSession | null>(null);
 const revokePending = ref(false);
 
 const currentUser = computed(() => adminState.currentUser);
+const route = useRoute();
+const router = useRouter();
 
 const roleNames = computed(() =>
   (currentUser.value?.authorities ?? []).filter(a => a.startsWith('ROLE_')).map(a => a.slice(5))
@@ -145,6 +148,16 @@ function openSessionsDrawer() {
   void loadSessions(1);
 }
 
+function closeSessionsDrawer() {
+  if (sessionPending.value) {
+    return;
+  }
+  sessionsDrawerOpen.value = false;
+  if (route.query.panel === 'sessions') {
+    void router.replace({ path: '/', query: { ...route.query, panel: undefined } });
+  }
+}
+
 function changeSessionPage(page: number) {
   if (page < 1 || page > sessionTotalPages.value || page === sessionPage.value || sessionPending.value) {
     return;
@@ -171,9 +184,9 @@ async function confirmRevoke() {
   }
   revokePending.value = true;
   try {
-    await revokeUserSessions(target.userId);
+    await revokeUserSessions(target.subjectId);
     revokeTarget.value = null;
-    const nextPage = sessions.value.every(s => s.userId === target.userId) ? Math.max(sessionPage.value - 1, 1) : sessionPage.value;
+    const nextPage = sessions.value.every(s => s.subjectId === target.subjectId) ? Math.max(sessionPage.value - 1, 1) : sessionPage.value;
     await Promise.all([
       loadSessions(nextPage),
       fetchAdminDashboard().then(overview => { dashboard.value = overview; })
@@ -185,7 +198,12 @@ async function confirmRevoke() {
   }
 }
 
-onMounted(loadDashboard);
+onMounted(() => {
+  void loadDashboard();
+  if (route.query.panel === 'sessions') {
+    openSessionsDrawer();
+  }
+});
 </script>
 
 <template>
@@ -264,7 +282,7 @@ onMounted(loadDashboard);
           <h2>最近登录的用户</h2>
         </div>
         <ul v-if="recentLogins.length" class="dashboard-login-list">
-          <li v-for="login in recentLogins" :key="login.userId">
+          <li v-for="login in recentLogins" :key="login.subjectId">
             <div class="dashboard-login-user">
               <strong>{{ login.displayName || login.username }}</strong>
               <span>{{ login.username }}<template v-if="login.departmentName"> · {{ login.departmentName }}</template></span>
@@ -315,7 +333,7 @@ onMounted(loadDashboard);
       :pending="sessionPending"
       title="在线会话"
       description="当前实例的全部活跃会话，按最近活跃倒序；强制下线会撤销该用户全部会话。"
-      @close="!sessionPending && (sessionsDrawerOpen = false)"
+      @close="closeSessionsDrawer"
     >
       <p v-if="sessionError" class="admin-message error" role="alert">{{ sessionError }}</p>
       <h3 class="drawer-section-title">在线会话（{{ sessionTotal }}）</h3>

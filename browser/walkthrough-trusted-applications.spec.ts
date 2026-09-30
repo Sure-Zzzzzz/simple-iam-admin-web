@@ -50,7 +50,8 @@ test('可信应用全链路走查：创建 → 门户 → PKCE → 工证校验 
   await createDrawer.locator('input[placeholder="应用名称"]').fill(applicationName);
   await createDrawer.locator('input[placeholder="OAuth2 client_id"]').fill(clientId);
   await createDrawer.locator('input[placeholder="客户端名称"]').fill(`走查客户端${stamp}`);
-  await createDrawer.locator('select[aria-label="客户端类型"]').selectOption('PUBLIC');
+  await createDrawer.getByRole('button', { name: '客户端类型' }).click();
+  await page.getByRole('option', { name: '公共客户端（浏览器/原生应用）', exact: true }).click();
   await createDrawer.locator('textarea[placeholder="https://app.example.com/login/oauth2/code/iam"]').fill(redirectUri);
   await createDrawer.locator('input[placeholder="openid profile message.read"]').fill('openid profile');
   await createDrawer.getByRole('button', { name: '创建应用' }).click();

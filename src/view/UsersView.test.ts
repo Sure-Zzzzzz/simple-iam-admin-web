@@ -3,15 +3,16 @@ import { createRouter, createWebHistory } from 'vue-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyAdminBridge, createRuntimeRequest } from '../adminState';
 import UsersView from './UsersView.vue';
+import { formSelectDisplay, pickFormSelectOption } from './formSelectDriver';
 
-const adminUser = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const adminUser = { subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const departments = [
   { id: 10, code: 'tech', name: '技术部', parentId: null, parentName: null, sortOrder: 0, status: 1, createdAt: '', updatedAt: '' }
 ];
 const usersPage = {
   content: [
-    { id: 2, username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '技术部', identitySource: 'ldap-password', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' },
-    { id: 3, username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, identitySource: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
+    { id: 2, subjectId: 'sid-2', username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '技术部', identitySource: 'ldap-password', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' },
+    { id: 3, subjectId: 'sid-3', username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, identitySource: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
   ],
   totalElements: 2,
   totalPages: 1,
@@ -101,10 +102,10 @@ const baseHandlers = {
   'GET /iam/admin/departments': departments,
   'GET /iam/admin/trusted-applications/page?page=1&size=100': applicationsPage,
   'GET /iam/web/auth/providers': providers,
-  'GET /iam/admin/users/2/roles': [roles[1]],
-  'GET /iam/admin/users/3/roles': [],
-  'GET /iam/admin/users/2/application-authorizations': [],
-  'GET /iam/admin/users/3/application-authorizations': []
+  'GET /iam/admin/users/sid-2/roles': [roles[1]],
+  'GET /iam/admin/users/sid-3/roles': [],
+  'GET /iam/admin/users/sid-2/application-authorizations': [],
+  'GET /iam/admin/users/sid-3/application-authorizations': []
 };
 
 describe('UsersView', () => {
@@ -120,7 +121,7 @@ describe('UsersView', () => {
 
   it('仅有用户权限时应保留用户列表并跳过无权的附属目录请求', async () => {
     const operator = {
-      userId: 9,
+      subjectId: 'sid-9',
       username: 'user-operator',
       displayName: '用户操作员',
       admin: false,
@@ -128,7 +129,7 @@ describe('UsersView', () => {
     };
     const request = createRequestMock({
       'GET /iam/admin/users?page=1&size=10': usersPage,
-      'GET /iam/admin/users/2/roles': [roles[1]]
+      'GET /iam/admin/users/sid-2/roles': [roles[1]]
     });
 
     const wrapper = await mountView(request, {}, operator);
@@ -156,8 +157,8 @@ describe('UsersView', () => {
         .mockReturnValueOnce(usersPage)
         .mockReturnValueOnce({ ...usersPage, content: [{ ...usersPage.content[0], username: 'bob' }] }),
       'POST /iam/admin/users': created,
-      'GET /iam/admin/users/2/roles': [],
-      'GET /iam/admin/users/3/roles': []
+      'GET /iam/admin/users/sid-2/roles': [],
+      'GET /iam/admin/users/sid-3/roles': []
     });
 
     const wrapper = await mountView(request);
@@ -167,7 +168,7 @@ describe('UsersView', () => {
     const inputs = createForm.findAll('input');
     await inputs[0].setValue('bob');
     await inputs[1].setValue('User@1234');
-    await createForm.find('select').setValue('10');
+    await pickFormSelectOption(wrapper, { ariaLabel: '所属部门' }, '技术部（tech）');
     await createForm.trigger('submit.prevent');
     await flushPromises();
 
@@ -190,8 +191,8 @@ describe('UsersView', () => {
     let calls = 0;
     const request = createRequestMock({
       ...baseHandlers,
-      'POST /iam/admin/users/2/roles/2': { },
-      'GET /iam/admin/users/2/roles': () => (++calls === 1 ? [roles[0]] : roles)
+      'POST /iam/admin/users/sid-2/roles/2': { },
+      'GET /iam/admin/users/sid-2/roles': () => (++calls === 1 ? [roles[0]] : roles)
     });
 
     const wrapper = await mountView(request);
@@ -203,7 +204,7 @@ describe('UsersView', () => {
     await assignButton!.trigger('click');
     await flushPromises();
 
-    expect(request).toHaveBeenCalledWith('/iam/admin/users/2/roles/2', { method: 'POST' });
+    expect(request).toHaveBeenCalledWith('/iam/admin/users/sid-2/roles/2', { method: 'POST' });
     expect(wrapper.text()).toContain('无可分配角色');
   });
 
@@ -213,8 +214,8 @@ describe('UsersView', () => {
     const request = createRequestMock({
       ...baseHandlers,
       'GET /iam/admin/trusted-applications/5/permission-manifest': permissionManifest,
-      'GET /iam/admin/users/2/application-authorizations': () => (granted ? [activeAuthorization] : []),
-      'PUT /iam/admin/users/2/application-authorizations/5': () => {
+      'GET /iam/admin/users/sid-2/application-authorizations': () => (granted ? [activeAuthorization] : []),
+      'PUT /iam/admin/users/sid-2/application-authorizations/5': () => {
         granted = true;
         putBodies.push(null);
         return { applicationId: 5, authorizationVersion: 1 };
@@ -242,7 +243,7 @@ describe('UsersView', () => {
     await drawer.get('button[type="submit"]').trigger('submit.prevent');
     await flushPromises();
 
-    expect(request).toHaveBeenCalledWith('/iam/admin/users/2/application-authorizations/5', {
+    expect(request).toHaveBeenCalledWith('/iam/admin/users/sid-2/application-authorizations/5', {
       method: 'PUT',
       body: JSON.stringify({
         admitted: true,
@@ -262,9 +263,9 @@ describe('UsersView', () => {
     const request = createRequestMock({
       ...baseHandlers,
       'GET /iam/admin/trusted-applications/5/permission-manifest': permissionManifest,
-      'GET /iam/admin/users/2/application-authorizations': () => [activeAuthorization],
-      'GET /iam/admin/users/2/application-authorizations/5': authorizationDetail,
-      'PUT /iam/admin/users/2/application-authorizations/5': () => {
+      'GET /iam/admin/users/sid-2/application-authorizations': () => [activeAuthorization],
+      'GET /iam/admin/users/sid-2/application-authorizations/5': authorizationDetail,
+      'PUT /iam/admin/users/sid-2/application-authorizations/5': () => {
         saved = true;
         return { applicationId: 5, authorizationVersion: 3 };
       }
@@ -296,7 +297,7 @@ describe('UsersView', () => {
     await flushPromises();
 
     expect(saved).toBe(true);
-    expect(request).toHaveBeenCalledWith('/iam/admin/users/2/application-authorizations/5', {
+    expect(request).toHaveBeenCalledWith('/iam/admin/users/sid-2/application-authorizations/5', {
       method: 'PUT',
       body: JSON.stringify({
         admitted: true,
@@ -313,7 +314,7 @@ describe('UsersView', () => {
       ...baseHandlers,
       'GET /iam/admin/trusted-applications/5/permission-manifest': () =>
         Promise.reject(new Error('可信应用未登记权限清单：id=5')),
-      'GET /iam/admin/users/2/application-authorizations': []
+      'GET /iam/admin/users/sid-2/application-authorizations': []
     });
 
     const wrapper = await mountView(request);
@@ -328,14 +329,14 @@ describe('UsersView', () => {
     expect(drawer.text()).toContain('尚未登记权限清单');
     expect(drawer.find('.picker-group').exists()).toBe(false);
     expect(drawer.find('button[type="submit"]').exists()).toBe(false);
-    expect(request.mock.calls.filter(([url, init]) => url === '/iam/admin/users/2/application-authorizations/5' && init?.method === 'PUT')).toHaveLength(0);
+    expect(request.mock.calls.filter(([url, init]) => url === '/iam/admin/users/sid-2/application-authorizations/5' && init?.method === 'PUT')).toHaveLength(0);
   });
 
   it('新建授权时数据授权区只读展示空态且无任何输入入口', async () => {
     const request = createRequestMock({
       ...baseHandlers,
       'GET /iam/admin/trusted-applications/5/permission-manifest': permissionManifest,
-      'GET /iam/admin/users/2/application-authorizations': []
+      'GET /iam/admin/users/sid-2/application-authorizations': []
     });
 
     const wrapper = await mountView(request);
@@ -356,8 +357,8 @@ describe('UsersView', () => {
     let revoked = false;
     const request = createRequestMock({
       ...baseHandlers,
-      'GET /iam/admin/users/2/application-authorizations': () => (revoked ? [revokedAuthorization] : [activeAuthorization]),
-      'DELETE /iam/admin/users/2/application-authorizations/5': () => {
+      'GET /iam/admin/users/sid-2/application-authorizations': () => (revoked ? [revokedAuthorization] : [activeAuthorization]),
+      'DELETE /iam/admin/users/sid-2/application-authorizations/5': () => {
         revoked = true;
         return undefined;
       }
@@ -377,15 +378,15 @@ describe('UsersView', () => {
     await confirmButton.trigger('click');
     await flushPromises();
 
-    expect(request).toHaveBeenCalledWith('/iam/admin/users/2/application-authorizations/5', { method: 'DELETE' });
+    expect(request).toHaveBeenCalledWith('/iam/admin/users/sid-2/application-authorizations/5', { method: 'DELETE' });
     expect(wrapper.text()).toContain('重新授权');
   });
 
   it('平台管理员抽屉应展示特权说明并禁用撤销按钮，普通用户无说明可撤销', async () => {
     const request = createRequestMock({
       ...baseHandlers,
-      'GET /iam/admin/users/2/roles': [roles[0]],
-      'GET /iam/admin/users/2/application-authorizations': [activeAuthorization]
+      'GET /iam/admin/users/sid-2/roles': [roles[0]],
+      'GET /iam/admin/users/sid-2/application-authorizations': [activeAuthorization]
     });
 
     const wrapper = await mountView(request);
@@ -409,7 +410,7 @@ describe('UsersView', () => {
 
     const plainRequest = createRequestMock({
       ...baseHandlers,
-      'GET /iam/admin/users/2/application-authorizations': [activeAuthorization]
+      'GET /iam/admin/users/sid-2/application-authorizations': [activeAuthorization]
     });
     const plainWrapper = await mountView(plainRequest);
     await plainWrapper.get('tbody button').trigger('click');
@@ -425,7 +426,7 @@ describe('UsersView', () => {
     const bound = vi.fn();
     const request = createRequestMock({
       ...baseHandlers,
-      'POST /iam/admin/users/3/external-identity': bound
+      'POST /iam/admin/users/sid-3/external-identity': bound
     });
 
     const wrapper = await mountView(request);
@@ -435,12 +436,12 @@ describe('UsersView', () => {
 
     const bindForm = wrapper.findAll('form').find(form => form.text().includes('绑定外部身份'));
     expect(bindForm).toBeTruthy();
-    await bindForm!.find('select').setValue('ldap-password');
+    await pickFormSelectOption(wrapper, { ariaLabel: '登录方式' }, 'LDAP 登录（ldap-password）');
     await bindForm!.find('input').setValue('uid=bob,ou=people,dc=example');
     await bindForm!.trigger('submit.prevent');
     await flushPromises();
 
-    expect(bound).toHaveBeenCalledWith('/iam/admin/users/3/external-identity', {
+    expect(bound).toHaveBeenCalledWith('/iam/admin/users/sid-3/external-identity', {
       method: 'POST',
       body: JSON.stringify({ providerCode: 'ldap-password', externalId: 'uid=bob,ou=people,dc=example' })
     });
@@ -451,7 +452,7 @@ describe('UsersView', () => {
     const unbound = vi.fn();
     const request = createRequestMock({
       ...baseHandlers,
-      'DELETE /iam/admin/users/2/external-identity': unbound
+      'DELETE /iam/admin/users/sid-2/external-identity': unbound
     });
 
     const wrapper = await mountView(request);
@@ -467,7 +468,7 @@ describe('UsersView', () => {
     await confirmButton.trigger('click');
     await flushPromises();
 
-    expect(unbound).toHaveBeenCalledWith('/iam/admin/users/2/external-identity', { method: 'DELETE' });
+    expect(unbound).toHaveBeenCalledWith('/iam/admin/users/sid-2/external-identity', { method: 'DELETE' });
     expect(wrapper.text()).toContain('外部身份已解绑');
   });
 
@@ -483,8 +484,7 @@ describe('UsersView', () => {
 
       const wrapper = await mountView(request, { locked: '1' });
 
-      const viewSelect = wrapper.findAll('.user-filter-bar select')[1];
-      expect((viewSelect.element as HTMLSelectElement).value).toBe('locked');
+      expect(formSelectDisplay(wrapper, { ariaLabel: '用户视图筛选' })).toBe('锁定中');
       expect(request.mock.calls.some(([url]) => String(url).includes('lockedUntilAfter='))).toBe(true);
     } finally {
       vi.useRealTimers();
@@ -499,8 +499,7 @@ describe('UsersView', () => {
 
     const wrapper = await mountView(request, { noDepartment: '1' });
 
-    const viewSelect = wrapper.findAll('.user-filter-bar select')[1];
-    expect((viewSelect.element as HTMLSelectElement).value).toBe('noDepartment');
+    expect(formSelectDisplay(wrapper, { ariaLabel: '用户视图筛选' })).toBe('未挂部门');
     expect(request.mock.calls.some(([url]) => String(url).includes('noDepartment=true'))).toBe(true);
   });
 
@@ -517,8 +516,7 @@ describe('UsersView', () => {
 
       const wrapper = await mountView(request, { lastLogin: 'today' });
 
-      const viewSelect = wrapper.findAll('.user-filter-bar select')[1];
-      expect((viewSelect.element as HTMLSelectElement).value).toBe('today');
+      expect(formSelectDisplay(wrapper, { ariaLabel: '用户视图筛选' })).toBe('今日登录');
       expect(request.mock.calls.some(([url]) => String(url).includes('lastLoginAfter='))).toBe(true);
       expect(wrapper.text()).toContain('爱丽丝');
     } finally {
@@ -533,8 +531,7 @@ describe('UsersView', () => {
     });
 
     const wrapper = await mountView(request);
-    const statusSelect = wrapper.findAll('.user-filter-bar select')[0];
-    await statusSelect.setValue('0');
+    await pickFormSelectOption(wrapper, { ariaLabel: '用户状态筛选' }, '禁用');
     await flushPromises();
 
     expect(request.mock.calls.some(([url]) => String(url).includes('status=0'))).toBe(true);
@@ -543,7 +540,7 @@ describe('UsersView', () => {
     await wrapper.get('.user-filter-bar .button-secondary').trigger('click');
     await flushPromises();
 
-    expect((statusSelect.element as HTMLSelectElement).value).toBe('');
+    expect(formSelectDisplay(wrapper, { ariaLabel: '用户状态筛选' })).toBe('全部状态');
     expect(request.mock.calls.filter(([url]) => String(url) === '/iam/admin/users?page=1&size=10')).toHaveLength(2);
   });
 
@@ -556,7 +553,7 @@ describe('UsersView', () => {
           {
             ...usersPage.content[0],
             email: 'alice@example.com',
-            phone: '13800000001',
+            phone: '+8613800000001',
             lastLoginAt: '2026-09-01T08:30:00Z',
             createdAt: '2026-01-15T02:00:00Z'
           },
@@ -568,12 +565,26 @@ describe('UsersView', () => {
     const wrapper = await mountView(request);
 
     const headers = wrapper.findAll('thead th').map(th => th.text());
-    expect(headers).toEqual(['用户', '部门', '邮箱', '手机号', '身份来源', '状态', '最近登录', '创建时间', '操作']);
+    expect(headers).toEqual(['用户 / 主体 ID', '部门', '邮箱', '手机号', '身份来源', '状态', '最近登录', '创建时间', '操作']);
     expect(wrapper.text()).toContain('alice@example.com');
-    expect(wrapper.text()).toContain('13800000001');
+    expect(wrapper.text()).toContain('+86 13800000001');
     expect(wrapper.text()).toContain('锁定至');
     expect(wrapper.find('tbody .status-badge.success').exists()).toBe(true);
+    expect(wrapper.find('.user-table .col-email').exists()).toBe(true);
+    expect(wrapper.find('.user-table .col-email').attributes('style')).toBeUndefined();
     expect(wrapper.findAll('.user-table .col-login, .user-table .col-created').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('新建用户表单应为用户名提供正确的可访问名称', async () => {
+    const wrapper = await mountView(createRequestMock(baseHandlers));
+
+    await wrapper.get('.admin-page-actions .button-primary').trigger('click');
+    await flushPromises();
+
+    const createDrawer = wrapper.findAll('.entity-drawer').find(drawer => drawer.text().includes('新建用户'))!;
+    const usernameField = createDrawer.get('input[placeholder="用户名"]');
+    expect(usernameField.element.closest('label')?.textContent).toContain('用户名');
+    expect(usernameField.element.closest('label')?.textContent).not.toContain('用户已启用');
   });
 
   it('锁定用户行应展示解锁操作，点击后调用解锁端点并刷新列表', async () => {
@@ -588,7 +599,7 @@ describe('UsersView', () => {
     const request = createRequestMock({
       ...baseHandlers,
       'GET /iam/admin/users?page=1&size=10': () => lockedPage,
-      'PUT /iam/admin/users/2/unlock': unlocked
+      'PUT /iam/admin/users/sid-2/unlock': unlocked
     });
 
     const wrapper = await mountView(request);
@@ -602,7 +613,7 @@ describe('UsersView', () => {
     await aliceRow.findAll('button').find(button => button.text() === '解锁')!.trigger('click');
     await flushPromises();
 
-    expect(unlocked).toHaveBeenCalledWith('/iam/admin/users/2/unlock', { method: 'PUT' });
+    expect(unlocked).toHaveBeenCalledWith('/iam/admin/users/sid-2/unlock', { method: 'PUT' });
     expect(wrapper.text()).toContain('已解锁 alice');
   });
 
@@ -615,10 +626,10 @@ describe('UsersView', () => {
         content: [
           { ...usersPage.content[0], username: 'plain-user' },
           { ...usersPage.content[1], username: 'disabled-user', status: 0 },
-          { ...usersPage.content[0], id: 4, username: 'locked-user', lockedUntil: '2099-01-01T00:00:00Z' }
+          { ...usersPage.content[0], subjectId: 'sid-4', username: 'locked-user', lockedUntil: '2099-01-01T00:00:00Z' }
         ]
       },
-      'DELETE /iam/admin/users/4': deleteSpy
+      'DELETE /iam/admin/users/sid-4': deleteSpy
     });
 
     const wrapper = await mountView(request);
@@ -637,7 +648,7 @@ describe('UsersView', () => {
     await dialog.get('.button-danger').trigger('click');
     await flushPromises();
 
-    expect(deleteSpy).toHaveBeenCalledWith('/iam/admin/users/4', { method: 'DELETE' });
+    expect(deleteSpy).toHaveBeenCalledWith('/iam/admin/users/sid-4', { method: 'DELETE' });
     expect(wrapper.text()).toContain('已删除用户 locked-user');
   });
 
@@ -647,11 +658,11 @@ describe('UsersView', () => {
       ...baseHandlers,
       'GET /iam/admin/users?page=1&size=10': {
         ...usersPage,
-        content: [{ ...usersPage.content[1], id: 7, username: 'disabled-user', status: 0 }]
+        content: [{ ...usersPage.content[1], subjectId: 'sid-7', username: 'disabled-user', status: 0 }]
       },
-      'DELETE /iam/admin/users/7': deleteSpy,
-      'GET /iam/admin/users/7/roles': [],
-      'GET /iam/admin/users/7/application-authorizations': []
+      'DELETE /iam/admin/users/sid-7': deleteSpy,
+      'GET /iam/admin/users/sid-7/roles': [],
+      'GET /iam/admin/users/sid-7/application-authorizations': []
     });
 
     const wrapper = await mountView(request);
@@ -665,14 +676,14 @@ describe('UsersView', () => {
     await wrapper.get('.confirm-dialog .button-danger').trigger('click');
     await flushPromises();
 
-    expect(deleteSpy).toHaveBeenCalledWith('/iam/admin/users/7', { method: 'DELETE' });
+    expect(deleteSpy).toHaveBeenCalledWith('/iam/admin/users/sid-7', { method: 'DELETE' });
     expect(wrapper.text()).toContain('已删除用户 disabled-user');
   });
 
   it('删除被服务端拒绝（如最后一个管理员）时应展示错误且不发成功提示', async () => {
     const request = createRequestMock({
       ...baseHandlers,
-      'DELETE /iam/admin/users/2': () => Promise.reject(new Error('最后一个可用管理员不可删除'))
+      'DELETE /iam/admin/users/sid-2': () => Promise.reject(new Error('最后一个可用管理员不可删除'))
     });
 
     const wrapper = await mountView(request);

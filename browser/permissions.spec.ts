@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 
-const delegateUser = { userId: 3, username: 'useradmin', displayName: '用户管理员', admin: false, authorities: ['ROLE_iam_user', 'iam:user:page', 'iam:user:api'] };
+const delegateUser = { subjectId: 'sid-useradmin', username: 'useradmin', displayName: '用户管理员', admin: false, authorities: ['ROLE_iam_user', 'iam:user:page', 'iam:user:api'] };
 const usersPage = {
   content: [
-    { id: 2, username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
+    { subjectId: 'sid-alice', username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
   ],
   totalElements: 1, totalPages: 1, page: 1, size: 20, numberOfElements: 1, first: true, last: true, empty: false
 };

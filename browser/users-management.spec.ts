@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
 
-const user = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const user = { subjectId: 'sid-admin', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const departments = [
   { id: 10, code: 'tech', name: '技术部', parentId: null, parentName: null, sortOrder: 0, status: 1, createdAt: '', updatedAt: '' }
 ];
 const usersPage = {
   content: [
-    { id: 2, username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '技术部', identitySource: 'ldap-password', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
+    { subjectId: 'sid-alice', username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '技术部', identitySource: 'ldap-password', status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }
   ],
   totalElements: 1, totalPages: 1, page: 1, size: 20, numberOfElements: 1, first: true, last: true, empty: false
 };
@@ -48,8 +48,8 @@ async function mockBase(page, authorizationList, onPut) {
   await page.route('**/iam/admin/departments', route => route.fulfill({ json: departments }));
   await page.route('**/iam/admin/trusted-applications/page?**', route => route.fulfill({ json: applicationsPage }));
   await page.route('**/iam/admin/trusted-applications/5/permission-manifest', route => route.fulfill({ json: permissionManifest }));
-  await page.route('**/iam/admin/users/2/roles', route => route.fulfill({ json: userRoles }));
-  await page.route('**/iam/admin/users/2/application-authorizations**', route => {
+  await page.route('**/iam/admin/users/sid-alice/roles', route => route.fulfill({ json: userRoles }));
+  await page.route('**/iam/admin/users/sid-alice/application-authorizations**', route => {
     const method = route.request().method();
     if (method === 'PUT') {
       authorizationList.value = [activeAuthorization];
@@ -70,6 +70,27 @@ test('用户管理页展示用户与身份来源', async ({ page }) => {
 
   await expect(page.getByRole('cell', { name: 'alice' })).toBeVisible();
   await expect(page.getByText('LDAP')).toBeVisible();
+});
+
+test('用户表为邮箱保留列宽，新建表单可通过用户名标签定位', async ({ page }) => {
+  await mockBase(page, { value: [] });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto('/app/iam/users');
+
+  const emailColumnWidth = await page.locator('.user-table .col-email').evaluate(element => getComputedStyle(element).width);
+  expect(Number.parseFloat(emailColumnWidth)).toBeGreaterThanOrEqual(220);
+
+  const tableLayout = await page.locator('.responsive-table').evaluate(container => ({
+    clientWidth: container.clientWidth,
+    scrollWidth: container.scrollWidth,
+    pageClientWidth: document.documentElement.clientWidth,
+    pageScrollWidth: document.documentElement.scrollWidth
+  }));
+  expect(tableLayout.scrollWidth).toBeGreaterThan(tableLayout.clientWidth);
+  expect(tableLayout.pageScrollWidth).toBeLessThanOrEqual(tableLayout.pageClientWidth);
+
+  await page.getByRole('button', { name: '创建用户' }).click();
+  await expect(page.getByLabel('用户名')).toBeVisible();
 });
 
 test('授权准入应经抽屉从权限清单勾选并提交授权内容', async ({ page }) => {
@@ -129,7 +150,7 @@ test('绑定外部身份应提交登录方式与外部标识', async ({ page }) 
   await mockBase(page, { value: [] });
   const localUsersPage = { ...usersPage, content: [{ ...usersPage.content[0], identitySource: null }] };
   await page.route('**/iam/admin/users?**', route => route.fulfill({ json: localUsersPage }));
-  await page.route('**/iam/admin/users/2/external-identity', route => {
+  await page.route('**/iam/admin/users/sid-alice/external-identity', route => {
     bindBody = route.request().postDataJSON();
     return route.fulfill({ json: {} });
   });
@@ -138,7 +159,8 @@ test('绑定外部身份应提交登录方式与外部标识', async ({ page }) 
   await page.locator('tbody button').first().click();
 
   const bindForm = page.locator('form', { hasText: '绑定外部身份' });
-  await bindForm.locator('select').selectOption('ldap-password');
+  await bindForm.getByRole('button', { name: '登录方式' }).click();
+  await page.getByRole('option', { name: 'LDAP 登录（ldap-password）', exact: true }).click();
   await bindForm.locator('input').fill('uid=alice,ou=people,dc=example');
   await bindForm.getByRole('button', { name: '绑定外部身份' }).click();
 

@@ -4,7 +4,7 @@ import { applyAdminBridge, createRuntimeRequest } from '../adminState';
 import MessagesView from './MessagesView.vue';
 
 const usersPage = {
-  content: [{ id: 2, username: 'user', displayName: '用户', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }],
+  content: [{ id: 2, subjectId: 'sid-2', username: 'user', displayName: '用户', email: '', phone: '', departmentId: null, departmentName: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' }],
   totalElements: 1, totalPages: 1, page: 1, size: 20, numberOfElements: 1, first: true, last: true, empty: false
 };
 const departments = [{ id: 3, code: 'tech', name: '技术部', parentId: null, parentName: null, sortOrder: 0, status: 1, createdAt: '', updatedAt: '' }];
@@ -17,19 +17,19 @@ const batchSummary = {
 const batchesPage = { content: [batchSummary], totalElements: 1, totalPages: 1, page: 1, size: 10, numberOfElements: 1, first: true, last: true, empty: false };
 const batchDetail = { ...batchSummary, content: '今晚 22 点系统维护，预计 1 小时。' };
 const recipientsPageOne = {
-  content: [{ userId: 2, username: 'user', displayName: '用户', readAt: '2026-08-31T11:00:00Z' }],
+  content: [{ subjectId: 'sid-2', username: 'user', displayName: '用户', readAt: '2026-08-31T11:00:00Z' }],
   totalElements: 11, totalPages: 2, page: 1, size: 10, numberOfElements: 1, first: true, last: false, empty: false
 };
 const recipientsPageTwo = {
-  content: [{ userId: 5, username: 'reader2', displayName: '读者二', readAt: null }],
+  content: [{ subjectId: 'sid-5', username: 'reader2', displayName: '读者二', readAt: null }],
   totalElements: 11, totalPages: 2, page: 2, size: 10, numberOfElements: 1, first: false, last: true, empty: false
 };
 
 function applyBridge(request: ReturnType<typeof vi.fn>) {
   applyAdminBridge({
-    currentUser: { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] },
+    currentUser: { subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] },
     request: createRuntimeRequest(request),
-    refreshCurrentUser: async () => ({ userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] }),
+    refreshCurrentUser: async () => ({ subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] }),
     refreshUnreadCount: vi.fn().mockResolvedValue(undefined),
     onUnauthorized: () => undefined
   });
@@ -127,7 +127,7 @@ describe('MessagesView', () => {
 
     expect(request).toHaveBeenCalledWith('/iam/admin/messages', {
       method: 'POST',
-      body: JSON.stringify({ recipientUserIds: [], departmentIds: [], userGroupIds: [4], includeChildDepartments: false, title: '群发通知', content: '通知内容' })
+      body: JSON.stringify({ recipientSubjectIds: [], departmentIds: [], userGroupIds: [4], includeChildDepartments: false, title: '群发通知', content: '通知内容' })
     });
     expect(wrapper.text()).toContain('站内信已发送给 2 位用户');
     expect(request.mock.calls.filter(call => call[0] === '/iam/admin/messages/page?page=1&size=10').length).toBeGreaterThanOrEqual(2);

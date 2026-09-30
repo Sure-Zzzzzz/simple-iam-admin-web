@@ -2,8 +2,9 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyAdminBridge, createRuntimeRequest } from '../adminState';
 import RolesView from './RolesView.vue';
+import { formSelectDisplay } from './formSelectDriver';
 
-const adminUser = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const adminUser = { subjectId: 'sid-1', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 
 const roles = [
   { id: 1, code: 'business_op', name: '业务运营', description: '', builtIn: 0 },
@@ -22,8 +23,8 @@ const permissions = [
   { id: 15, code: 'iam:data:all', name: 'IAM全量数据', description: '', type: 'data', builtIn: 1 }
 ];
 const members = [
-  { id: 21, username: 'op-user', displayName: '运营甲', departmentName: '运营部', status: 1 },
-  { id: 22, username: 'op-user-2', displayName: null, departmentName: null, status: 0 }
+  { id: 21, subjectId: 'sid-21', username: 'op-user', displayName: '运营甲', departmentName: '运营部', status: 1 },
+  { id: 22, subjectId: 'sid-22', username: 'op-user-2', displayName: null, departmentName: null, status: 0 }
 ];
 const memberPage = {
   content: members, totalElements: members.length, totalPages: 1,
@@ -550,7 +551,7 @@ describe('RolesView', () => {
     await flushPromises();
 
     const card = document.querySelector('.rule-grant-card')!;
-    expect((card.querySelector('select') as HTMLSelectElement).value).toBe('iam:user');
+    expect(formSelectDisplay(wrapper, { ariaLabel: '数据资源' })).toBe('iam:user');
 
     const readCheck = Array.from(card.querySelectorAll<HTMLInputElement>('.picker-options input[type="checkbox"]'))
       .find(input => input.parentElement?.textContent?.includes('read'));
@@ -565,7 +566,7 @@ describe('RolesView', () => {
     await flushPromises();
 
     const constraintRow = card.querySelector('.rule-constraint-row')!;
-    expect((constraintRow.querySelector('select') as HTMLSelectElement).value).toBe('departmentId');
+    expect(formSelectDisplay(wrapper, { ariaLabel: '约束维度' })).toBe('departmentId');
     const valueInput = constraintRow.querySelector('input') as HTMLInputElement;
     valueInput.value = 'D01, D02';
     valueInput.dispatchEvent(new Event('input'));

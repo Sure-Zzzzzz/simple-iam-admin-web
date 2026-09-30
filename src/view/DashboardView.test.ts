@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { defineComponent, type PropType } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import DashboardView from './DashboardView.vue';
 import * as iamAuth from '../api/iamAuth';
@@ -12,7 +13,7 @@ const dashboardFixture: AdminDashboard = {
 };
 
 const recentLoginFixture: AdminDashboardRecentLogin = {
-  userId: 1,
+  subjectId: 'sid-1',
   username: 'alice',
   displayName: '张三',
   departmentName: '研发部',
@@ -35,7 +36,7 @@ function recentPage(content: AdminDashboardRecentLogin[], totalElements = conten
 
 const sessionFixture: AdminSession = {
   sessionId: 'sess-1',
-  userId: 2,
+  subjectId: 'sid-2',
   username: 'bob',
   clientId: 'console',
   remoteIp: '10.0.0.9',
@@ -81,9 +82,15 @@ const routerLinkStub = defineComponent({
   template: '<a :href="resolveHref()"><slot /></a>'
 });
 
-function mountDashboard() {
+async function mountDashboard(path = '/') {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/', component: DashboardView }]
+  });
+  await router.push(path);
   return mount(DashboardView, {
     global: {
+      plugins: [router],
       stubs: { RouterLink: routerLinkStub }
     }
   });
@@ -100,7 +107,7 @@ describe('DashboardView', () => {
     vi.spyOn(iamAuth, 'fetchAdminDashboard').mockResolvedValue(dashboardFixture);
     vi.spyOn(iamAuth, 'fetchDashboardRecentLogins').mockResolvedValue(recentPage([recentLoginFixture]));
     adminState.currentUser = {
-      userId: 9,
+      subjectId: 'sid-9',
       username: 'admin',
       displayName: '管理员',
       admin: true,
@@ -192,7 +199,7 @@ describe('DashboardView', () => {
   });
 
   it('最近登录分页：多页时展示翻页并按页请求', async () => {
-    const logins = Array.from({ length: 5 }, (_, index) => ({ ...recentLoginFixture, userId: index + 1 }));
+    const logins = Array.from({ length: 5 }, (_, index) => ({ ...recentLoginFixture, subjectId: `sid-${index + 1}` }));
     const spy = vi.spyOn(iamAuth, 'fetchDashboardRecentLogins').mockResolvedValue(recentPage(logins, 12));
     vi.spyOn(iamAuth, 'fetchAdminDashboard').mockResolvedValue(dashboardFixture);
 
@@ -238,9 +245,25 @@ describe('DashboardView', () => {
     await confirmDialog.get('.button-danger').trigger('click');
     await flushPromises();
 
-    expect(revokeSpy).toHaveBeenCalledWith(2);
+    expect(revokeSpy).toHaveBeenCalledWith('sid-2');
     expect(sessionsSpy).toHaveBeenCalledTimes(2);
     expect(dashboardSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('会话深链接打开仪表盘内的在线会话抽屉', async () => {
+    vi.spyOn(iamAuth, 'fetchAdminDashboard').mockResolvedValue(dashboardFixture);
+    vi.spyOn(iamAuth, 'fetchDashboardRecentLogins').mockResolvedValue(recentPage([recentLoginFixture]));
+    const sessionsSpy = vi.spyOn(iamAuth, 'fetchActiveSessions').mockResolvedValue(sessionPage([sessionFixture]));
+
+    const wrapper = await mountDashboard('/?panel=sessions');
+    await flushPromises();
+
+    expect(wrapper.get('.entity-drawer').text()).toContain('在线会话');
+    expect(sessionsSpy).toHaveBeenCalledWith({ page: 1, size: 10 });
+    await wrapper.get('.entity-drawer').findAll('button').find(button => button.attributes('aria-label') === '关闭')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.entity-drawer').exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it('加载失败时展示错误与重试入口', async () => {

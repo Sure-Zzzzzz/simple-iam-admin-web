@@ -4,6 +4,7 @@ import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import DashboardIcon from '../components/DashboardIcon.vue';
 import EntityDrawer from '../components/EntityDrawer.vue';
+import FormSelect, { type FormSelectOption } from '@sure-zzzzzz/simple-iam-theme-contract/FormSelect';
 import Pagination from '@sure-zzzzzz/simple-iam-theme-contract/Pagination';
 import {
   assignUserGroupUser,
@@ -40,6 +41,16 @@ const relationshipPending = ref(false);
 const createForm = reactive({ code: '', name: '', description: '', status: 1 });
 const editForm = reactive({ name: '', description: '', status: 1 });
 
+const groupStatusFilterOptions: FormSelectOption[] = [
+  { label: '全部状态', value: '' },
+  { label: '启用', value: '1' },
+  { label: '禁用', value: '0' }
+];
+const groupStatusOptions: FormSelectOption[] = [
+  { label: '启用', value: 1 },
+  { label: '禁用', value: 0 }
+];
+
 const candidateKeyword = ref('');
 const candidates = ref<IamUser[]>([]);
 const candidateSearched = ref(false);
@@ -52,8 +63,8 @@ const candidatePageSize = ref(10);
 const hasFilter = computed(() => filterForm.keyword.trim() !== '' || filterForm.status !== '');
 
 const assignableUsers = computed(() => {
-  const assigned = new Set(selectedGroupUsers.value.map(user => user.id));
-  return candidates.value.filter(user => !assigned.has(user.id));
+  const assigned = new Set(selectedGroupUsers.value.map(user => user.subjectId));
+  return candidates.value.filter(user => !assigned.has(user.subjectId));
 });
 
 function buildGroupQuery(): StatusPageQuery {
@@ -261,7 +272,7 @@ function changeCandidatePageSize(size: number) {
   void loadCandidates(1);
 }
 
-async function assignUser(userId: number) {
+async function assignUser(subjectId: string) {
   if (!selectedGroup.value) {
     return;
   }
@@ -269,7 +280,7 @@ async function assignUser(userId: number) {
   message.value = '';
   errorMessage.value = '';
   try {
-    await assignUserGroupUser(selectedGroup.value.id, userId);
+    await assignUserGroupUser(selectedGroup.value.id, subjectId);
     selectedGroupUsers.value = await fetchUserGroupUsers(selectedGroup.value.id);
     message.value = '成员已添加';
   } catch (error) {
@@ -291,7 +302,7 @@ async function confirmRemoveUser() {
   message.value = '';
   errorMessage.value = '';
   try {
-    await revokeUserGroupUser(selectedGroup.value.id, removeMemberTarget.value.id);
+    await revokeUserGroupUser(selectedGroup.value.id, removeMemberTarget.value.subjectId);
     selectedGroupUsers.value = await fetchUserGroupUsers(selectedGroup.value.id);
     message.value = '成员已移除';
     removeMemberTarget.value = null;
@@ -326,11 +337,7 @@ onMounted(loadGroups);
       </header>
       <div class="data-toolbar group-filter-bar">
         <label class="search-field"><span class="sr-only">搜索协作组</span><input v-model="filterForm.keyword" type="search" placeholder="搜索编码、名称或描述" @keyup.enter="searchGroups"></label>
-        <select v-model="filterForm.status" aria-label="协作组状态筛选" @change="searchGroups">
-          <option value="">全部状态</option>
-          <option value="1">启用</option>
-          <option value="0">禁用</option>
-        </select>
+        <FormSelect v-model="filterForm.status" :options="groupStatusFilterOptions" aria-label="协作组状态筛选" @change="searchGroups" />
         <button class="button-secondary" type="button" @click="resetFilters">重置</button>
       </div>
       <div v-if="userGroups.length === 0" class="admin-empty-state">
@@ -367,7 +374,7 @@ onMounted(loadGroups);
         <label><span>协作组编码</span><input v-model="createForm.code" required maxlength="64" placeholder="协作组编码"></label>
         <label><span>协作组名称</span><input v-model="createForm.name" required maxlength="128" placeholder="协作组名称"></label>
         <label><span>描述</span><textarea v-model="createForm.description" maxlength="255" placeholder="说明协作组的使用场景"></textarea></label>
-        <label><span>状态</span><select v-model.number="createForm.status" aria-label="协作组状态"><option :value="1">启用</option><option :value="0">禁用</option></select></label>
+        <label><span>状态</span><FormSelect v-model="createForm.status" :options="groupStatusOptions" aria-label="协作组状态" /></label>
         <footer class="drawer-actions"><button class="button-secondary" type="button" :disabled="submitting" @click="createDrawerOpen = false">取消</button><button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在创建…' : '创建协作组' }}</button></footer>
       </form>
     </EntityDrawer>
@@ -377,14 +384,14 @@ onMounted(loadGroups);
         <form class="drawer-form" @submit.prevent="submitUpdateGroup">
           <label><span>协作组名称</span><input v-model="editForm.name" required maxlength="128" placeholder="协作组名称"></label>
           <label><span>描述</span><textarea v-model="editForm.description" maxlength="255" placeholder="说明协作组的使用场景"></textarea></label>
-          <label><span>状态</span><select v-model.number="editForm.status" aria-label="协作组状态"><option :value="1">启用</option><option :value="0">禁用</option></select></label>
+          <label><span>状态</span><FormSelect v-model="editForm.status" :options="groupStatusOptions" aria-label="协作组状态" /></label>
           <button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在保存…' : '保存协作组' }}</button>
         </form>
 
         <section class="assignment-section">
           <header><div><h3>已分配成员 <span>{{ selectedGroupUsers.length }}</span></h3><p>成员仍保留其部门与角色边界；点击移除可解除协作关系。</p></div></header>
           <div v-if="selectedGroupUsers.length" class="assignment-list">
-            <article v-for="user in selectedGroupUsers" :key="user.id"><div><strong>{{ user.displayName || user.username }}</strong><span>{{ user.username }}{{ user.departmentName ? ` · ${user.departmentName}` : '' }}</span></div><button class="table-action danger" type="button" @click="requestRemoveUser(user)">移除</button></article>
+            <article v-for="user in selectedGroupUsers" :key="user.subjectId"><div><strong>{{ user.displayName || user.username }}</strong><span>{{ user.username }}{{ user.departmentName ? ` · ${user.departmentName}` : '' }}</span></div><button class="table-action danger" type="button" @click="requestRemoveUser(user)">移除</button></article>
           </div>
           <p v-else class="assignment-empty">当前没有成员。</p>
         </section>
@@ -393,7 +400,7 @@ onMounted(loadGroups);
           <header><div><h3>添加成员</h3><p>可翻页或按账号、显示名筛选；已加入的不再显示。</p></div></header>
           <label class="search-field"><span class="sr-only">筛选可添加成员</span><input v-model="candidateKeyword" type="search" placeholder="搜索账号或显示名，回车筛选" @keyup.enter="searchCandidates"></label>
           <div v-if="assignableUsers.length" class="assignment-list available">
-            <article v-for="user in assignableUsers" :key="user.id"><div><strong>{{ user.displayName || user.username }}</strong><span>{{ user.username }}{{ user.departmentName ? ` · ${user.departmentName}` : '' }}</span></div><button class="table-action" type="button" :disabled="relationshipPending" @click="assignUser(user.id)">{{ relationshipPending ? '处理中…' : '添加' }}</button></article>
+            <article v-for="user in assignableUsers" :key="user.subjectId"><div><strong>{{ user.displayName || user.username }}</strong><span>{{ user.username }}{{ user.departmentName ? ` · ${user.departmentName}` : '' }}</span></div><button class="table-action" type="button" :disabled="relationshipPending" @click="assignUser(user.subjectId)">{{ relationshipPending ? '处理中…' : '添加' }}</button></article>
           </div>
           <p v-else-if="candidateLoading" class="assignment-empty">正在读取用户…</p>
           <p v-else-if="!candidateSearched" class="assignment-empty">正在准备用户列表…</p>

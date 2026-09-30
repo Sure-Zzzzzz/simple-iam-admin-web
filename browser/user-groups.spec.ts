@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
 
-const user = { userId: 1, username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
+const user = { subjectId: 'sid-admin', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const providers = { providers: [
   { code: 'local-password', displayName: '账号密码登录', type: 'password', enabled: true, description: null }
 ] };
 const opsGroup = { id: 1, code: 'ops', name: '运营组', description: '运营通知', status: 1, createdAt: '', updatedAt: '' };
-const alice = { id: 2, username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '技术部', identitySource: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
-const bob = { id: 3, username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, identitySource: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
+const alice = { subjectId: 'sid-alice', username: 'alice', displayName: '爱丽丝', email: '', phone: '', departmentId: 10, departmentName: '技术部', identitySource: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
+const bob = { subjectId: 'sid-bob', username: 'bob', displayName: '鲍勃', email: '', phone: '', departmentId: null, departmentName: null, identitySource: null, status: 1, lockedUntil: null, lastLoginAt: null, createdAt: '', updatedAt: '' };
 const usersPage = { content: [alice, bob], totalElements: 2, totalPages: 1, page: 1, size: 100, numberOfElements: 2, first: true, last: true, empty: false };
 
 function makeGroupsPage(page = 1) {
@@ -35,6 +35,7 @@ async function mockBase(page, handlers: Record<string, (route) => void> = {}) {
     const pageNum = Number(new URL(route.request().url()).searchParams.get('page') || '1');
     return route.fulfill({ json: makeGroupsPage(pageNum) });
   });
+  await page.route('**/iam/admin/user-groups/*/users**', route => route.fulfill({ json: [] }));
   await page.route('**/iam/admin/user-groups/1/users**', route => {
     if (handlers.groupUsers) {
       return handlers.groupUsers(route);
@@ -85,7 +86,8 @@ test('筛选与分页应携带服务端查询参数', async ({ page }) => {
   await expect(page.locator('.pagination button.active')).toHaveText('1');
   await expect.poll(() => pageUrls.at(-1) || '').toContain('keyword=ops');
 
-  await bar.locator('select').selectOption('1');
+  await bar.getByRole('button', { name: '协作组状态筛选' }).click();
+  await page.getByRole('option', { name: '启用', exact: true }).click();
   await expect.poll(() => pageUrls.at(-1) || '').toContain('status=1');
   expect(pageUrls.at(-1)).toContain('page=1');
 
@@ -200,6 +202,6 @@ test('添加成员默认展示候选可直接添加并支持移除确认', async
   await page.getByRole('button', { name: '确认移除' }).click();
   await expect(page.getByText('成员已移除')).toBeVisible();
 
-  expect(groupCalls).toContainEqual({ url: '/iam/admin/user-groups/1/users/3', method: 'POST' });
-  expect(groupCalls).toContainEqual({ url: '/iam/admin/user-groups/1/users/2', method: 'DELETE' });
+  expect(groupCalls).toContainEqual({ url: '/iam/admin/user-groups/1/users/sid-bob', method: 'POST' });
+  expect(groupCalls).toContainEqual({ url: '/iam/admin/user-groups/1/users/sid-alice', method: 'DELETE' });
 });

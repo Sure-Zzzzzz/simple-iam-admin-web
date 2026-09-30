@@ -79,7 +79,8 @@ test('组织与成员全链路走查', async ({ page }) => {
   await filterBar.locator('input[type="search"]').fill(memberName);
   await filterBar.locator('input[type="search"]').press('Enter');
   await expect(page.locator('tbody')).toContainText(memberName);
-  await filterBar.locator('select').selectOption('');
+  await filterBar.getByRole('button', { name: '成员状态筛选' }).click();
+  await page.getByRole('option', { name: '全部状态', exact: true }).click();
   await filterBar.locator('input[type="search"]').fill('');
   await filterBar.locator('input[type="search"]').press('Enter');
 
@@ -163,7 +164,8 @@ test('组织与成员全链路走查', async ({ page }) => {
   await tree.locator('input[type="search"]').fill(parentCode);
   await tree.getByRole('button', { name: new RegExp(`走查父改${stamp}`) }).click({ force: true });
   await page.locator('tbody button').first().click();
-  await deptDrawer.locator('select').selectOption('');
+  await deptDrawer.getByRole('button', { name: '所属部门' }).click();
+  await page.getByRole('option', { name: '未分配部门', exact: true }).click();
   await deptDrawer.getByRole('button', { name: '保存成员资料' }).click();
   await expect(page.getByText('成员资料与所属部门已更新')).toBeVisible();
   // 保存成功后组件还要 refresh + 重拉画像，pending 期间关闭按钮静默拒绝，等抽屉不忙再关

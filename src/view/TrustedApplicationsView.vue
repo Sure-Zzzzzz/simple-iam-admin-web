@@ -4,6 +4,7 @@ import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, FilePlus2, FolderPlus, P
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import EntityDrawer from '../components/EntityDrawer.vue';
+import FormSelect, { type FormSelectOption } from '@sure-zzzzzz/simple-iam-theme-contract/FormSelect';
 import Pagination from '@sure-zzzzzz/simple-iam-theme-contract/Pagination';
 import {
   createResourceVerificationClient,
@@ -16,11 +17,13 @@ import {
   fetchPortalLoginLanding,
   fetchResourceVerificationClients,
   fetchTrustedApplication,
+  fetchTrustedApplicationOwnerInheritance,
   fetchTrustedApplications,
   putApplicationPermissionManifest,
   revokeResourceVerificationClient,
   rotateResourceVerificationClientSecret,
   updateTrustedApplication,
+  updateTrustedApplicationOwnerInheritance,
   updateTrustedApplicationPortalConfiguration,
   updatePortalApplicationOrder,
   updatePortalLoginLanding,
@@ -30,6 +33,7 @@ import {
   type TrustedApplication,
   type TrustedApplicationClient,
   type TrustedApplicationDetail,
+  type TrustedApplicationOwnerInheritance,
   type TrustedApplicationResourceVerificationClient,
   type PortalMenuNodeType,
   type PortalPresentationMode,
@@ -107,6 +111,9 @@ const portalOrderSaving = ref(false);
 const portalOrderQuery = ref('');
 const portalApplicationOrder = ref<PortalApplicationOrder | null>(null);
 const portalOrderDraft = ref<PortalApplicationOrderItem[]>([]);
+const ownerInheritance = ref<TrustedApplicationOwnerInheritance | null>(null);
+const ownerInheritanceDraft = ref(false);
+const ownerInheritanceSubmitting = ref(false);
 
 const portalOrderHasQuery = computed(() => Boolean(portalOrderQuery.value.trim()));
 
@@ -121,6 +128,7 @@ const createForm = reactive({
   applicationName: '',
   description: '',
   icon: 'default',
+  builtIn: false,
   clientId: '',
   clientName: '',
   clientType: 'CONFIDENTIAL',
@@ -136,6 +144,7 @@ const editForm = reactive({
   applicationName: '',
   description: '',
   icon: 'default',
+  builtIn: false,
   portalEnabled: false,
   portalEntry: '',
   portalApiBase: '',
@@ -144,12 +153,18 @@ const editForm = reactive({
   portalLoginLandingEnabled: false
 });
 
+// 清空默认页面时同步清掉静态子路径残留：输入框随 v-if 隐藏但值仍会卡住保存校验
+watch(() => editForm.portalDefaultPageMenuCode, (code) => {
+  if (!code && editForm.portalDefaultEntryPath) {
+    editForm.portalDefaultEntryPath = '';
+  }
+});
+
 interface MenuTreeDraft {
   draftId: string;
   code: string;
   name: string;
-  nodeType: PortalMenuNodeType;
-  icon: string;
+  nodeType: PortalMenuNodeType;  icon: string;
   route: string;
   requiredPagePermission: string;
   presentationMode: PortalPresentationMode;
@@ -187,6 +202,55 @@ const activeMenuRow = computed(() => flatMenuTreeDraft.value.find(({ node }) => 
 const portalPageChoices = computed(() => flatMenuTreeDraft.value.filter(({ node }) => node.nodeType === 'PAGE'));
 const selectedDefaultPage = computed(() => portalPageChoices.value
   .find(({ node }) => node.code === editForm.portalDefaultPageMenuCode)?.node || null);
+
+const iconSelectOptions = computed<FormSelectOption[]>(() =>
+  TRUSTED_APPLICATION_ICONS.map(icon => ({ label: icon.label, value: icon.code }))
+);
+const clientTypeOptions: FormSelectOption[] = [
+  { label: '机密客户端（服务端应用，持密钥）', value: 'CONFIDENTIAL' },
+  { label: '公共客户端（浏览器/原生应用）', value: 'PUBLIC' }
+];
+const portalDefaultPageOptions = computed<FormSelectOption[]>(() => [
+  { label: '不设置，按首个可访问页面进入', value: '' },
+  ...portalPageChoices.value.map(choice => ({
+    label: `${choice.node.name || '未命名页面'} · ${choice.node.route || '待填写路由'}`,
+    value: choice.node.code
+  }))
+]);
+const menuNodeTypeOptions: FormSelectOption[] = [
+  { label: '分组', value: 'GROUP' },
+  { label: '页面', value: 'PAGE' }
+];
+const menuParentOptions = computed<FormSelectOption[]>(() => {
+  const row = activeMenuRow.value;
+  if (!row) return [{ label: '根级', value: '' }];
+  return [
+    { label: '根级', value: '' },
+    ...menuGroupTargets.value
+      .filter(({ node }) => canUseAsParent(row.node, node))
+      .map(target => ({ label: menuGroupTargetLabel(target), value: target.node.draftId }))
+  ];
+});
+const presentationModeOptions: FormSelectOption[] = [
+  { label: '标准布局', value: 'STANDARD' },
+  { label: '沉浸展示（隐藏 Portal 顶栏和左侧栏）', value: 'IMMERSIVE' }
+];
+const requiredPagePermissionOptions = computed<FormSelectOption[]>(() => [
+  { label: '继承应用准入', value: '' },
+  ...(manifestCurrent.value?.pagePermissions || []).map(permission => ({ label: permission, value: permission }))
+]);
+
+function handleNodeTypeChange(value: string | number) {
+  if (activeMenuRow.value) {
+    selectMenuNodeType(activeMenuRow.value.node, String(value) as PortalMenuNodeType);
+  }
+}
+
+function handleParentChange(value: string | number) {
+  if (activeMenuRow.value) {
+    changeMenuParent(activeMenuRow.value.node, String(value));
+  }
+}
 const canManagePortalLoginLanding = computed(() => adminState.currentUser?.authorities.includes('ROLE_iam_admin') || false);
 
 function nextDraftId() {
@@ -515,6 +579,7 @@ async function submitCreate() {
       applicationName: createForm.applicationName,
       description: createForm.description,
       icon: createForm.icon,
+      ...(createForm.builtIn ? { builtIn: true } : {}),
       initialClient: {
         clientId: createForm.clientId,
         clientName: createForm.clientName,
@@ -548,17 +613,42 @@ async function openDetail(application: TrustedApplication) {
   errorMessage.value = '';
   rotateSecretResult.value = null;
   try {
-    const [applicationDetail, loginLanding] = await Promise.all([
+    const [applicationDetail, loginLanding, ownerInheritanceState] = await Promise.all([
       fetchTrustedApplication(application.id),
-      fetchPortalLoginLanding()
+      fetchPortalLoginLanding(),
+      fetchTrustedApplicationOwnerInheritance(application.id)
     ]);
     detail.value = applicationDetail;
     portalLoginLanding.value = loginLanding;
+    ownerInheritance.value = ownerInheritanceState;
+    ownerInheritanceDraft.value = ownerInheritanceState.enabled;
     syncEditStateFromDetail();
     detailDrawerOpen.value = true;
     await Promise.all([loadResourceClients(application.id), loadManifest(application.id)]);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载应用详情失败';
+  }
+}
+
+async function submitOwnerInheritance() {
+  if (!detail.value || !ownerInheritance.value) return;
+  ownerInheritanceSubmitting.value = true;
+  errorMessage.value = '';
+  message.value = '';
+  try {
+    ownerInheritance.value = await updateTrustedApplicationOwnerInheritance(
+      detail.value.id,
+      ownerInheritanceDraft.value
+    );
+    ownerInheritanceDraft.value = ownerInheritance.value.enabled;
+    message.value = ownerInheritance.value.enabled
+      ? 'AKU 所属人授权继承已开启，正在同步授权投影'
+      : 'AKU 所属人授权继承已关闭，新继承凭证将失败关闭';
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '保存 AKU 授权继承设置失败';
+    ownerInheritanceDraft.value = ownerInheritance.value.enabled;
+  } finally {
+    ownerInheritanceSubmitting.value = false;
   }
 }
 
@@ -623,6 +713,7 @@ function syncEditStateFromDetail() {
     applicationName: detail.value.applicationName,
     description: detail.value.description || '',
     icon: detail.value.icon || 'default',
+    builtIn: detail.value.builtIn || false,
     portalEnabled: detail.value.portal?.enabled || false,
     portalEntry: detail.value.portal?.entry || '',
     portalApiBase: detail.value.portal?.apiBase || '',
@@ -741,7 +832,8 @@ async function submitUpdateApplication() {
     await updateTrustedApplication(detail.value.id, {
       applicationName: editForm.applicationName,
       description: editForm.description,
-      icon: editForm.icon
+      icon: editForm.icon,
+      builtIn: editForm.builtIn
     });
     basicSaved = true;
     await updateTrustedApplicationPortalConfiguration(detail.value.id, {
@@ -955,7 +1047,7 @@ onMounted(loadTrustedApplications);
       </header>
       <div class="responsive-table">
         <table>
-          <thead><tr><th>应用</th><th>图标</th><th>统一应用门户</th><th>客户端</th><th class="table-actions">操作</th></tr></thead>
+          <thead><tr><th>应用</th><th>图标</th><th>门户 / 内置</th><th>客户端</th><th class="table-actions">操作</th></tr></thead>
           <tbody>
             <tr v-for="application in trustedApplications" :key="application.id" :class="{ selected: detail?.id === application.id }">
               <td>
@@ -965,7 +1057,10 @@ onMounted(loadTrustedApplications);
                 </button>
               </td>
               <td><span class="trusted-app-icon" :aria-label="trustedApplicationIcon(application.icon).label" role="img"><component :is="trustedApplicationIcon(application.icon).component" :size="16" :stroke-width="2" aria-hidden="true" /></span></td>
-              <td><span class="status-badge" :class="application.portalEnabled ? 'success' : 'neutral'">{{ application.portalEnabled ? '门户可见' : '门户已隐藏' }}</span></td>
+              <td>
+                <span v-if="application.builtIn" class="status-badge success" title="平台内置应用，禁删除/禁停用">内置</span>
+                <span class="status-badge" :class="application.portalEnabled ? 'success' : 'neutral'">{{ application.portalEnabled ? '门户可见' : '门户已隐藏' }}</span>
+              </td>
               <td>{{ application.clientCount }} 个</td>
               <td class="table-actions">
                 <button class="table-action" type="button" @click="openDetail(application)">管理</button>
@@ -1049,19 +1144,15 @@ onMounted(loadTrustedApplications);
         <label><span>应用名称</span><input v-model="createForm.applicationName" required placeholder="应用名称"></label>
         <label><span>应用说明</span><textarea v-model="createForm.description" placeholder="说明应用用途"></textarea></label>
         <label><span>应用图标</span>
-          <select v-model="createForm.icon" required aria-label="应用图标">
-            <option v-for="icon in TRUSTED_APPLICATION_ICONS" :key="icon.code" :value="icon.code">{{ icon.label }}</option>
-          </select>
+          <FormSelect v-model="createForm.icon" :options="iconSelectOptions" aria-label="应用图标" />
         </label>
+        <label class="checkbox-field"><input v-model="createForm.builtIn" type="checkbox"><span>标记为内置应用（禁删除/禁停用，客户端强制免授权确认）</span></label>
 
         <h3 class="drawer-section-title">初始 OAuth2 客户端</h3>
         <label><span>客户端 ID</span><input v-model="createForm.clientId" required placeholder="OAuth2 client_id"></label>
         <label><span>客户端名称</span><input v-model="createForm.clientName" required placeholder="客户端名称"></label>
         <label><span>客户端类型</span>
-          <select v-model="createForm.clientType" required aria-label="客户端类型">
-            <option value="CONFIDENTIAL">机密客户端（服务端应用，持密钥）</option>
-            <option value="PUBLIC">公共客户端（浏览器/原生应用）</option>
-          </select>
+          <FormSelect v-model="createForm.clientType" :options="clientTypeOptions" aria-label="客户端类型" />
         </label>
         <label><span>回调地址（每行一个）</span><textarea v-model="createForm.redirectUris" required placeholder="https://app.example.com/login/oauth2/code/iam"></textarea></label>
         <label><span>授权范围（空格分隔）</span><input v-model="createForm.scopes" required placeholder="openid profile message.read"></label>
@@ -1098,10 +1189,9 @@ onMounted(loadTrustedApplications);
           <label><span>应用名称</span><input v-model="editForm.applicationName" required placeholder="应用名称"></label>
           <label><span>应用说明</span><textarea v-model="editForm.description" placeholder="说明应用用途"></textarea></label>
           <label><span>应用图标</span>
-            <select v-model="editForm.icon" required aria-label="应用图标">
-              <option v-for="icon in TRUSTED_APPLICATION_ICONS" :key="icon.code" :value="icon.code">{{ icon.label }}</option>
-            </select>
+            <FormSelect v-model="editForm.icon" :options="iconSelectOptions" aria-label="应用图标" />
           </label>
+          <label class="checkbox-field"><input v-model="editForm.builtIn" type="checkbox"><span>标记为内置应用（禁删除/禁停用，客户端强制免授权确认）</span></label>
 
           <h3 class="drawer-section-title">门户集成</h3>
           <label class="checkbox-field"><input v-model="editForm.portalEnabled" type="checkbox"><span>在统一应用门户中可见</span></label>
@@ -1116,12 +1206,7 @@ onMounted(loadTrustedApplications);
               </div>
             </header>
             <label><span>默认页面</span>
-              <select v-model="editForm.portalDefaultPageMenuCode" :disabled="!editForm.portalEnabled" aria-label="默认页面">
-                <option value="">不设置，按首个可访问页面进入</option>
-                <option v-for="choice in portalPageChoices" :key="choice.node.draftId" :value="choice.node.code">
-                  {{ choice.node.name || '未命名页面' }} · {{ choice.node.route || '待填写路由' }}
-                </option>
-              </select>
+              <FormSelect v-model="editForm.portalDefaultPageMenuCode" :options="portalDefaultPageOptions" :disabled="!editForm.portalEnabled" aria-label="默认页面" />
             </label>
             <label v-if="editForm.portalDefaultPageMenuCode"><span>静态子路径</span>
               <input v-model="editForm.portalDefaultEntryPath" :disabled="!editForm.portalEnabled" :placeholder="selectedDefaultPage?.route || '/page'">
@@ -1131,6 +1216,32 @@ onMounted(loadTrustedApplications);
               <input v-model="editForm.portalLoginLandingEnabled" type="checkbox" :disabled="!editForm.portalEnabled || !editForm.portalDefaultPageMenuCode">
               <span>作为无深链登录后的 Portal 首页</span>
             </label>
+            <p v-if="canManagePortalLoginLanding && editForm.portalEnabled && !editForm.portalDefaultPageMenuCode" class="drawer-hint">
+              需先选择默认页面，才能调整登录首页开关。
+            </p>
+          </section>
+          <section class="owner-inheritance-section" aria-label="AKU 所属人授权继承">
+            <header>
+              <div>
+                <h4>AKU 所属人授权继承</h4>
+                <p>开启后，AKSK 可按 IAM 当前用户的角色、部门和应用授权投影管理用户自己的 AKU。</p>
+              </div>
+              <span class="status-badge" :class="ownerInheritance?.enabled ? 'success' : 'neutral'">
+                {{ ownerInheritance?.enabled ? '已开启' : '已关闭' }}
+              </span>
+            </header>
+            <label class="checkbox-field owner-inheritance-toggle">
+              <input v-model="ownerInheritanceDraft" type="checkbox" :disabled="ownerInheritanceSubmitting">
+              <span>允许 AKSK 继承当前 IAM 用户授权</span>
+            </label>
+            <p class="drawer-hint">这不是 Portal 可见开关，也不会给用户新增 IAM 权限；关闭或投影过期时，AKSK 对继承凭证失败关闭。</p>
+            <div class="owner-inheritance-meta">
+              <span>授权纪元</span>
+              <strong>v{{ ownerInheritance?.applicationAuthorizationEpoch ?? '—' }}</strong>
+              <button class="button-secondary" type="button" :disabled="ownerInheritanceSubmitting || ownerInheritanceDraft === ownerInheritance?.enabled" @click="submitOwnerInheritance">
+                {{ ownerInheritanceSubmitting ? '正在同步…' : '保存授权设置' }}
+              </button>
+            </div>
           </section>
           <section class="menu-editor" :aria-label="`门户菜单（${flatMenuTreeDraft.length} 项）`">
             <header class="menu-editor-header">
@@ -1185,16 +1296,22 @@ onMounted(loadTrustedApplications);
                 </header>
                 <div class="menu-editor-fields">
                   <label><span>节点类型</span>
-                    <select :value="activeMenuRow.node.nodeType" :disabled="!editForm.portalEnabled" @change="selectMenuNodeType(activeMenuRow.node, ($event.target as HTMLSelectElement).value as PortalMenuNodeType)">
-                      <option value="GROUP">分组</option>
-                      <option value="PAGE">页面</option>
-                    </select>
+                    <FormSelect
+                      :model-value="activeMenuRow.node.nodeType"
+                      :options="menuNodeTypeOptions"
+                      :disabled="!editForm.portalEnabled"
+                      aria-label="节点类型"
+                      @change="handleNodeTypeChange"
+                    />
                   </label>
                   <label><span>父级分组</span>
-                    <select :value="activeMenuRow.parent?.draftId || ''" :disabled="!editForm.portalEnabled" @change="changeMenuParent(activeMenuRow.node, ($event.target as HTMLSelectElement).value)">
-                      <option value="">根级</option>
-                      <option v-for="target in menuGroupTargets.filter(({ node }) => canUseAsParent(activeMenuRow.node, node))" :key="target.node.draftId" :value="target.node.draftId">{{ menuGroupTargetLabel(target) }}</option>
-                    </select>
+                    <FormSelect
+                      :model-value="activeMenuRow.parent?.draftId || ''"
+                      :options="menuParentOptions"
+                      :disabled="!editForm.portalEnabled"
+                      aria-label="父级分组"
+                      @change="handleParentChange"
+                    />
                   </label>
                   <label><span>菜单编码</span><input v-model="activeMenuRow.node.code" :disabled="!editForm.portalEnabled" placeholder="如 workspace" required></label>
                   <label><span>菜单名称</span><input v-model="activeMenuRow.node.name" :disabled="!editForm.portalEnabled" placeholder="如 工作台" required></label>
@@ -1211,7 +1328,10 @@ onMounted(loadTrustedApplications);
                         title="按节点类型自动选择"
                         @click="activeMenuRow.node.icon = ''"
                       >
-                        <WandSparkles :size="17" aria-hidden="true" />
+                        <span class="menu-node-icon-auto">
+                          <component :is="menuNodeIcon('', activeMenuRow.node.nodeType).component" :size="17" :stroke-width="2" aria-hidden="true" />
+                          <WandSparkles :size="10" aria-hidden="true" class="menu-node-icon-auto-badge" />
+                        </span>
                       </button>
                       <button
                         v-for="icon in TRUSTED_APPLICATION_ICONS"
@@ -1232,16 +1352,10 @@ onMounted(loadTrustedApplications);
                   <template v-if="activeMenuRow.node.nodeType === 'PAGE'">
                     <label><span>路由（相对路径）</span><input v-model="activeMenuRow.node.route" :disabled="!editForm.portalEnabled" placeholder="如 /organizations" required></label>
                     <label><span>门户展示</span>
-                      <select v-model="activeMenuRow.node.presentationMode" :disabled="!editForm.portalEnabled" aria-label="门户展示">
-                        <option value="STANDARD">标准布局</option>
-                        <option value="IMMERSIVE">沉浸展示（隐藏 Portal 顶栏和左侧栏）</option>
-                      </select>
+                      <FormSelect v-model="activeMenuRow.node.presentationMode" :options="presentationModeOptions" :disabled="!editForm.portalEnabled" aria-label="门户展示" />
                     </label>
                     <label><span>页面权限</span>
-                      <select v-model="activeMenuRow.node.requiredPagePermission" :disabled="!editForm.portalEnabled">
-                        <option value="">继承应用准入</option>
-                        <option v-for="permission in manifestCurrent?.pagePermissions || []" :key="permission" :value="permission">{{ permission }}</option>
-                      </select>
+                      <FormSelect v-model="activeMenuRow.node.requiredPagePermission" :options="requiredPagePermissionOptions" :disabled="!editForm.portalEnabled" aria-label="页面权限" />
                     </label>
                   </template>
                 </div>
@@ -1366,10 +1480,7 @@ onMounted(loadTrustedApplications);
         <label><span>客户端 ID</span><input v-model="clientForm.clientId" required placeholder="OAuth2 client_id"></label>
         <label><span>客户端名称</span><input v-model="clientForm.clientName" required placeholder="客户端名称"></label>
         <label><span>客户端类型</span>
-          <select v-model="clientForm.clientType" required aria-label="客户端类型">
-            <option value="CONFIDENTIAL">机密客户端（服务端应用，持密钥）</option>
-            <option value="PUBLIC">公共客户端（浏览器/原生应用）</option>
-          </select>
+          <FormSelect v-model="clientForm.clientType" :options="clientTypeOptions" aria-label="客户端类型" />
         </label>
         <label><span>回调地址（每行一个）</span><textarea v-model="clientForm.redirectUris" required placeholder="https://app.example.com/login/oauth2/code/iam"></textarea></label>
         <label><span>授权范围（空格分隔）</span><input v-model="clientForm.scopes" required placeholder="openid profile message.read"></label>

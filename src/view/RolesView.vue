@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import EntityDrawer from '../components/EntityDrawer.vue';
+import FormSelect, { type FormSelectOption } from '@sure-zzzzzz/simple-iam-theme-contract/FormSelect';
 import {
   assignRolePermission,
   assignUserRole,
@@ -187,7 +188,7 @@ const memberCandidateKeyword = ref('');
 const memberCandidateDepartmentId = ref<number | ''>('');
 const memberCandidateGroupId = ref<number | ''>('');
 const memberCandidates = ref<IamUser[]>([]);
-const memberSelectedIds = ref<Set<number>>(new Set());
+const memberSelectedIds = ref<Set<string>>(new Set());
 const memberCandidatePending = ref(false);
 const memberAdding = ref(false);
 const memberAddFailures = ref<string[]>([]);
@@ -196,7 +197,7 @@ const userGroups = ref<IamUserGroup[]>([]);
 const revokeMemberTarget = ref<IamUser | null>(null);
 const memberRevoking = ref(false);
 
-const roleMemberIds = computed(() => new Set(roleMembers.value.map(user => user.id)));
+const roleMemberIds = computed(() => new Set(roleMembers.value.map(user => user.subjectId)));
 const memberSelectedCount = computed(() => memberSelectedIds.value.size);
 
 async function openMemberPicker() {
@@ -224,8 +225,8 @@ function closeMemberPicker() {
 }
 
 function mergeMemberCandidates(users: IamUser[]) {
-  const existingIds = new Set(memberCandidates.value.map(user => user.id));
-  const additions = users.filter(user => !existingIds.has(user.id));
+  const existingIds = new Set(memberCandidates.value.map(user => user.subjectId));
+  const additions = users.filter(user => !existingIds.has(user.subjectId));
   if (additions.length) {
     memberCandidates.value = [...memberCandidates.value, ...additions];
   }
@@ -242,7 +243,7 @@ async function applyMemberDepartmentFilter() {
     const page = await fetchUsers({ departmentId: memberCandidateDepartmentId.value, size: 100 });
     mergeMemberCandidates(page.content);
     const next = new Set(memberSelectedIds.value);
-    page.content.forEach(user => next.add(user.id));
+    page.content.forEach(user => next.add(user.subjectId));
     memberSelectedIds.value = next;
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '按部门加载成员失败';
@@ -261,7 +262,7 @@ async function applyMemberGroupFilter() {
     const users = await fetchUserGroupUsers(memberCandidateGroupId.value);
     mergeMemberCandidates(users);
     const next = new Set(memberSelectedIds.value);
-    users.forEach(user => next.add(user.id));
+    users.forEach(user => next.add(user.subjectId));
     memberSelectedIds.value = next;
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '按协作组加载成员失败';
@@ -287,12 +288,12 @@ async function searchMemberCandidates() {
   }
 }
 
-function toggleMemberCandidate(userId: number) {
+function toggleMemberCandidate(subjectId: string) {
   const next = new Set(memberSelectedIds.value);
-  if (next.has(userId)) {
-    next.delete(userId);
+  if (next.has(subjectId)) {
+    next.delete(subjectId);
   } else {
-    next.add(userId);
+    next.add(subjectId);
   }
   memberSelectedIds.value = next;
 }
@@ -316,10 +317,10 @@ async function confirmAddMembers() {
   const batchSize = 5;
   for (let index = 0; index < targetIds.length; index += batchSize) {
     const batch = targetIds.slice(index, index + batchSize);
-    const results = await Promise.allSettled(batch.map(userId => assignUserRole(userId, role.id)));
+    const results = await Promise.allSettled(batch.map(subjectId => assignUserRole(subjectId, role.id)));
     results.forEach((result, batchIndex) => {
       if (result.status === 'rejected') {
-        const user = memberCandidates.value.find(candidate => candidate.id === batch[batchIndex]);
+        const user = memberCandidates.value.find(candidate => candidate.subjectId === batch[batchIndex]);
         failed.push(user ? (user.displayName || user.username) : `用户 ${batch[batchIndex]}`);
       }
     });
@@ -353,7 +354,7 @@ async function confirmRevokeMember() {
   memberRevoking.value = true;
   errorMessage.value = '';
   try {
-    await revokeUserRole(target.id, role.id);
+    await revokeUserRole(target.subjectId, role.id);
     const memberPage = await fetchRoleMemberPage(role.id, { page: 1, size: 100 });
     roleMembers.value = memberPage.content;
     message.value = '已移除该成员的角色';
@@ -701,6 +702,30 @@ function grantDimensionOptions(row: RuleGrantRow) {
   return mergedCandidates(declared, row.constraints.map(item => item.dimension));
 }
 
+function grantResourceSelectOptions(row: RuleGrantRow): FormSelectOption[] {
+  return grantResourceOptions(row).map(option => ({
+    label: option.declared ? option.value : `${option.value}（清单未申报）`,
+    value: option.value
+  }));
+}
+
+function grantDimensionSelectOptions(row: RuleGrantRow): FormSelectOption[] {
+  return grantDimensionOptions(row).map(option => ({
+    label: option.declared ? option.value : `${option.value}（未申报）`,
+    value: option.value
+  }));
+}
+
+const memberDepartmentOptions = computed<FormSelectOption[]>(() => [
+  { label: '选择部门…', value: '' },
+  ...departments.value.map(department => ({ label: department.name, value: department.id }))
+]);
+
+const memberGroupOptions = computed<FormSelectOption[]>(() => [
+  { label: '选择协作组…', value: '' },
+  ...userGroups.value.map(group => ({ label: group.name, value: group.id }))
+]);
+
 // 切换资源即切换码空间：旧动作/约束维度对新资源无意义，全部清空
 function changeGrantResource(index: number) {
   const row = activeEditor.value?.grantRows[index];
@@ -1007,7 +1032,7 @@ onMounted(() => {
             <button class="button-secondary" type="button" @click="openMemberPicker">添加成员</button>
           </header>
           <div v-if="roleMembers.length" class="assignment-list">
-            <article v-for="user in roleMembers" :key="user.id">
+            <article v-for="user in roleMembers" :key="user.subjectId">
               <div>
                 <strong>{{ user.displayName || user.username }}</strong>
                 <span>{{ user.username }}{{ user.departmentName ? ` · ${user.departmentName}` : '' }}</span>
@@ -1024,17 +1049,23 @@ onMounted(() => {
             <div class="member-picker-filter-bar">
               <label>
                 <span class="sr-only">按部门筛选</span>
-                <select v-model="memberCandidateDepartmentId" :disabled="memberCandidatePending" @change="applyMemberDepartmentFilter">
-                  <option value="">选择部门…</option>
-                  <option v-for="department in departments" :key="department.id" :value="department.id">{{ department.name }}</option>
-                </select>
+                <FormSelect
+                  v-model="memberCandidateDepartmentId"
+                  :options="memberDepartmentOptions"
+                  :disabled="memberCandidatePending"
+                  aria-label="按部门筛选"
+                  @change="applyMemberDepartmentFilter"
+                />
               </label>
               <label>
                 <span class="sr-only">按协作组筛选</span>
-                <select v-model="memberCandidateGroupId" :disabled="memberCandidatePending" @change="applyMemberGroupFilter">
-                  <option value="">选择协作组…</option>
-                  <option v-for="group in userGroups" :key="group.id" :value="group.id">{{ group.name }}</option>
-                </select>
+                <FormSelect
+                  v-model="memberCandidateGroupId"
+                  :options="memberGroupOptions"
+                  :disabled="memberCandidatePending"
+                  aria-label="按协作组筛选"
+                  @change="applyMemberGroupFilter"
+                />
               </label>
               <label class="search-field">
                 <span class="sr-only">按关键字搜索</span>
@@ -1044,16 +1075,16 @@ onMounted(() => {
             <p v-if="memberCandidatePending" class="member-picker-status">正在加载…</p>
             <p v-else-if="!memberCandidates.length" class="member-picker-status">选择部门/协作组或搜索关键字以列出候选人。</p>
             <div v-else class="member-option-list">
-              <label v-for="user in memberCandidates" :key="user.id" class="member-option" :class="{ muted: roleMemberIds.has(user.id) }">
+              <label v-for="user in memberCandidates" :key="user.subjectId" class="member-option" :class="{ muted: roleMemberIds.has(user.subjectId) }">
                 <input
                   type="checkbox"
-                  :checked="memberSelectedIds.has(user.id) || roleMemberIds.has(user.id)"
-                  :disabled="roleMemberIds.has(user.id)"
-                  @change="toggleMemberCandidate(user.id)"
+                  :checked="memberSelectedIds.has(user.subjectId) || roleMemberIds.has(user.subjectId)"
+                  :disabled="roleMemberIds.has(user.subjectId)"
+                  @change="toggleMemberCandidate(user.subjectId)"
                 >
                 <span>
                   <strong>{{ user.displayName || user.username }}</strong>
-                  <small>{{ user.username }}{{ user.departmentName ? ` · ${user.departmentName}` : '' }}{{ roleMemberIds.has(user.id) ? ' · 已是成员' : '' }}</small>
+                  <small>{{ user.username }}{{ user.departmentName ? ` · ${user.departmentName}` : '' }}{{ roleMemberIds.has(user.subjectId) ? ' · 已是成员' : '' }}</small>
                 </span>
               </label>
             </div>
@@ -1232,11 +1263,13 @@ onMounted(() => {
               <div v-if="activeEditor.manifest?.dataResources.length || activeEditor.grantRows.length" class="rule-grant-list">
                 <div v-for="(grant, grantIndex) in activeEditor.grantRows" :key="grantIndex" class="rule-grant-card">
                   <header class="rule-grant-header">
-                    <select v-model="grant.resource" :disabled="activeEditor.pending" @change="changeGrantResource(grantIndex)">
-                      <option v-for="option in grantResourceOptions(grant)" :key="option.value" :value="option.value">
-                        {{ option.declared ? option.value : `${option.value}（清单未申报）` }}
-                      </option>
-                    </select>
+                    <FormSelect
+                      v-model="grant.resource"
+                      :options="grantResourceSelectOptions(grant)"
+                      :disabled="activeEditor.pending"
+                      aria-label="数据资源"
+                      @change="changeGrantResource(grantIndex)"
+                    />
                     <button class="button-secondary" type="button" :disabled="ruleSaving || activeEditor.pending" @click="activeEditor.grantRows.splice(grantIndex, 1)">删除授权</button>
                   </header>
                   <div v-if="grantActionOptions(grant).length" class="picker-options">
@@ -1256,11 +1289,12 @@ onMounted(() => {
                   </label>
                   <template v-if="!grant.all">
                     <div v-for="(constraint, constraintIndex) in grant.constraints" :key="constraintIndex" class="rule-constraint-row">
-                      <select v-model="constraint.dimension" :disabled="activeEditor.pending">
-                        <option v-for="option in grantDimensionOptions(grant)" :key="option.value" :value="option.value">
-                          {{ option.declared ? option.value : `${option.value}（未申报）` }}
-                        </option>
-                      </select>
+                      <FormSelect
+                        v-model="constraint.dimension"
+                        :options="grantDimensionSelectOptions(grant)"
+                        :disabled="activeEditor.pending"
+                        aria-label="约束维度"
+                      />
                       <input v-model="constraint.values" :disabled="activeEditor.pending" placeholder="维度值，逗号分隔" />
                       <button class="button-secondary" type="button" :disabled="ruleSaving || activeEditor.pending" @click="grant.constraints.splice(constraintIndex, 1)">删除</button>
                     </div>

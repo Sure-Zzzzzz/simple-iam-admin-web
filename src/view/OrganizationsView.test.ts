@@ -573,6 +573,165 @@ describe('OrganizationsView', () => {
     expect(wrapper.text()).toContain('撤销后系统将没有可用的 iam_admin 管理员，已拒绝');
   });
 
+  it('受委托角色只在固定根子树提供挂载，并携带已展示的版本', async () => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const delegated = { ...profile.roles[0], id: 20, name: '客户应用角色', openRoleBinding: binding };
+    let attached = false;
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles') return Promise.resolve([delegated, { ...delegated, id: 21, name: '其他客户角色', openRoleBinding: { ...binding, rootDepartmentId: 99 } }]);
+      if (url === '/iam/admin/roles/20') return Promise.resolve({ ...delegated, openRoleBinding: { ...binding, revision: attached ? 5 : 4 } });
+      if (url === '/iam/admin/departments/10/roles/20' && init.method === 'POST') { attached = true; return Promise.resolve(undefined); }
+      if (url === '/iam/admin/departments/10/roles') return Promise.resolve(attached ? [{ ...delegated, openRoleBinding: { ...binding, revision: 5 } }] : []);
+      return requestForWorkbench(url, init);
+    });
+    applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), onUnauthorized: () => undefined });
+    const wrapper = mountView();
+    await flushPromises();
+    const section = wrapper.findAll('.assignment-section').find(section => section.find('h3').text().includes('部门角色'))!;
+    expect(section.text()).toContain('客户应用角色');
+    expect(section.text()).not.toContain('其他客户角色');
+    await section.findAll('button').find(button => button.text() === '挂载')!.trigger('click');
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith('/iam/admin/departments/10/roles/20', { method: 'POST', headers: { 'if-match': '"open-role:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:4"' } });
+    await section.findAll('button').find(button => button.text() === '撤销')!.trigger('click');
+    await wrapper.findAll('button').find(button => button.text() === '确认移除')!.trigger('click');
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith('/iam/admin/departments/10/roles/20', { method: 'DELETE', headers: { 'if-match': '"open-role:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:5"' } });
+    wrapper.unmount();
+  });
+
+  it.each([412, 428])('部门角色挂载遇到 %s 刷新目录后要求重新确认，不自动重试', async status => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const delegated = { ...profile.roles[0], id: 20, name: '客户应用角色', openRoleBinding: binding };
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles') return Promise.resolve([delegated]);
+      if (url === '/iam/admin/roles/20') return Promise.resolve(delegated);
+      if (url === '/iam/admin/departments/10/roles/20' && init.method === 'POST') return Promise.reject(Object.assign(new Error('条件不满足'), { httpStatus: status }));
+      return requestForWorkbench(url, init);
+    });
+    applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), onUnauthorized: () => undefined });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.findAll('button').find(button => button.text() === '挂载')!.trigger('click');
+    await flushPromises();
+    expect(request.mock.calls.filter(([, init]) => (init as RequestInit).method === 'POST')).toHaveLength(1);
+    expect(wrapper.text()).toContain('请核对最新内容后重新确认操作');
+    wrapper.unmount();
+  });
+
+  it.each(['成功', '冲突'])('部门挂载旧请求%s返回时，A→B→A 不接收旧状态', async outcome => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const delegated = { ...profile.roles[0], id: 20, name: '客户应用角色', openRoleBinding: binding };
+    let resolveMutation!: () => void;
+    let rejectMutation!: (error: Error) => void;
+    const pending = new Promise<void>((resolve, reject) => { resolveMutation = resolve; rejectMutation = reject; });
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles') return Promise.resolve([delegated]);
+      if (url === '/iam/admin/roles/20') return Promise.resolve(delegated);
+      if (url === '/iam/admin/departments/10/roles/20' && init.method === 'POST') return pending;
+      if (url.includes('/organizations/departments/11/workspace')) return Promise.resolve({ ...workspace, department: workspace.directChildren[0], directChildren: [] });
+      if (url === '/iam/admin/departments/11/roles') return Promise.resolve([]);
+      return requestForWorkbench(url, init);
+    });
+    applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), onUnauthorized: () => undefined });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.findAll('button').find(button => button.text() === '挂载')!.trigger('click');
+    await flushPromises();
+    expect(request.mock.calls.filter(([, init]) => (init as RequestInit).method === 'POST')).toHaveLength(1);
+    await wrapper.findAll('.tree-node')[1].trigger('click');
+    await flushPromises();
+    await wrapper.findAll('.tree-node')[0].trigger('click');
+    await flushPromises();
+    if (outcome === '成功') resolveMutation();
+    else rejectMutation(Object.assign(new Error('旧角色冲突'), { httpStatus: 412 }));
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('角色已挂载到部门');
+    expect(wrapper.text()).not.toContain('角色已发生变化');
+    expect(wrapper.text()).not.toContain('旧角色冲突');
+    expect(request.mock.calls.filter(([url]) => url === '/iam/admin/roles')).toHaveLength(1);
+    expect(wrapper.findAll('button').find(button => button.text() === '挂载')!.attributes('disabled')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('部门角色冲突后刷新失败清除旧版本，不能再次从旧目录发起挂载', async () => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const delegated = { ...profile.roles[0], id: 20, name: '客户应用角色', openRoleBinding: binding };
+    let conflict = false;
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles') return conflict ? Promise.reject(new Error('目录暂不可用')) : Promise.resolve([delegated]);
+      if (url === '/iam/admin/roles/20') return Promise.resolve(delegated);
+      if (url === '/iam/admin/departments/10/roles/20' && init.method === 'POST') {
+        conflict = true;
+        return Promise.reject(Object.assign(new Error('条件不满足'), { httpStatus: 412 }));
+      }
+      return requestForWorkbench(url, init);
+    });
+    applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), onUnauthorized: () => undefined });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.findAll('button').find(button => button.text() === '挂载')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('重新加载角色失败：目录暂不可用');
+    expect(wrapper.findAll('button').filter(button => button.text() === '挂载')).toHaveLength(0);
+    expect(request.mock.calls.filter(([, init]) => (init as RequestInit).method === 'POST')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it.each(['版本变化', '名称变化', '边界变化', '读取失败', '切换部门'])('部门挂载先回读详情，%s 时零写请求', async scenario => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const delegated = { ...profile.roles[0], id: 20, name: '客户应用角色', openRoleBinding: binding };
+    let resolveDetail!: (value: typeof delegated) => void;
+    const detail = new Promise<typeof delegated>(resolve => { resolveDetail = resolve; });
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles') return Promise.resolve([delegated]);
+      if (url === '/iam/admin/roles/20') {
+        if (scenario === '读取失败') return Promise.reject(new Error('详情不可用'));
+        if (scenario === '切换部门') return detail;
+        return Promise.resolve({ ...delegated, name: scenario === '名称变化' ? '新客户角色' : delegated.name,
+          openRoleBinding: { ...binding, revision: scenario === '版本变化' ? 5 : 4, applicationId: scenario === '边界变化' ? 8 : 7 } });
+      }
+      if (url.includes('/organizations/departments/11/workspace')) return Promise.resolve({ ...workspace, department: workspace.directChildren[0], directChildren: [] });
+      if (url === '/iam/admin/departments/11/roles') return Promise.resolve([]);
+      return requestForWorkbench(url, init);
+    });
+    applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), onUnauthorized: () => undefined });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.findAll('button').find(button => button.text() === '挂载')!.trigger('click');
+    if (scenario === '切换部门') {
+      await wrapper.findAll('.tree-node')[1].trigger('click');
+      await flushPromises();
+      resolveDetail(delegated);
+    }
+    await flushPromises();
+    expect(request.mock.calls.filter(([, init]) => ['POST', 'DELETE'].includes((init as RequestInit).method ?? ''))).toHaveLength(0);
+    if (scenario === '读取失败') expect(wrapper.text()).toContain('详情不可用');
+    else if (scenario !== '切换部门') expect(wrapper.text()).toContain('请核对最新内容后重新确认操作');
+    wrapper.unmount();
+  });
+
+  it('部门撤销回读版本变化时关闭旧确认并且零写请求', async () => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const delegated = { ...profile.roles[0], id: 20, name: '客户应用角色', openRoleBinding: binding };
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles') return Promise.resolve([delegated]);
+      if (url === '/iam/admin/departments/10/roles') return Promise.resolve([delegated]);
+      if (url === '/iam/admin/roles/20') return Promise.resolve({ ...delegated, openRoleBinding: { ...binding, revision: 5 } });
+      return requestForWorkbench(url, init);
+    });
+    applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), onUnauthorized: () => undefined });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.findAll('button').find(button => button.text() === '撤销')!.trigger('click');
+    await wrapper.findAll('button').find(button => button.text() === '确认移除')!.trigger('click');
+    await flushPromises();
+    expect(request.mock.calls.filter(([, init]) => (init as RequestInit).method === 'DELETE')).toHaveLength(0);
+    expect(wrapper.text()).toContain('请核对最新内容后重新确认操作');
+    expect(wrapper.find('.confirm-dialog').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it('画像有效角色应标注来源且部门继承角色不可移除', async () => {
     const request = vi.fn().mockImplementation(requestForWorkbench);
     applyAdminBridge({ currentUser: adminUser, request: createRuntimeRequest(request), refreshCurrentUser: async () => adminUser, refreshUnreadCount: async () => undefined, onUnauthorized: () => undefined });

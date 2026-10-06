@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const user = { subjectId: 'sid-admin', username: 'admin', displayName: '管理员', admin: true, authorities: ['ROLE_iam_admin'] };
 const rootDepartment = { id: 10, code: 'headquarters', name: '总部', parentId: null, status: 1, sortOrder: 0 };
@@ -28,6 +28,17 @@ function makeProfile() {
   };
 }
 
+function trackApiFailures(page: Page) {
+  const failures: string[] = [];
+  page.on('requestfailed', request => {
+    if (new URL(request.url()).pathname.startsWith('/iam/')) failures.push(`${request.method()} ${request.url()}`);
+  });
+  page.on('response', response => {
+    if (new URL(response.url()).pathname.startsWith('/iam/') && response.status() >= 500) failures.push(`${response.status()} ${response.url()}`);
+  });
+  return failures;
+}
+
 async function mockShell(page) {
   await page.route('**/iam/web/auth/me', route => route.fulfill({ json: user }));
   await page.route('**/iam/web/auth/csrf', route => route.fulfill({ json: { headerName: 'X-CSRF-TOKEN', parameterName: '_csrf', token: 'test-csrf-token' } }));
@@ -47,7 +58,7 @@ async function mockWorkspaceBase(page, workspace = makeWorkspace()) {
   await page.route('**/iam/admin/user-groups', route => route.fulfill({ json: [noticeGroup, opsGroup] }));
   await page.route('**/iam/admin/roles', route => route.fulfill({ json: [operatorRole, auditorRole] }));
   await page.route('**/iam/admin/organizations/tree', route => route.fulfill({
-    json: [{ ...rootDepartment, directMemberCount: 1, children: [{ ...childDepartment, directMemberCount: 0, children: [] }] }]
+    json: [{ ...rootDepartment, directMemberCount: workspace.members.totalElements, children: [{ ...childDepartment, directMemberCount: 0, children: [] }] }]
   }));
   await page.route('**/iam/admin/organizations/departments/10/workspace**', route => route.fulfill({ json: workspace }));
   await page.route('**/iam/admin/departments/*/roles', route => route.fulfill({ json: [] }));
@@ -104,13 +115,20 @@ test('从空态创建根部门并继续创建下级部门', async ({ page }) => 
 });
 
 test('编辑部门应提交改名并提示成功', async ({ page }) => {
+  const apiFailures = trackApiFailures(page);
   await mockShell(page);
-  await mockWorkspaceBase(page);
+  const workspace = makeWorkspace();
+  await mockWorkspaceBase(page, workspace);
+  await page.route('**/iam/admin/departments', route => route.fulfill({ json: [workspace.department, childDepartment] }));
+  await page.route('**/iam/admin/organizations/tree', route => route.fulfill({
+    json: [{ ...workspace.department, directMemberCount: 1, children: [{ ...childDepartment, directMemberCount: 0, children: [] }] }]
+  }));
   let putBody = null;
   await page.route('**/iam/admin/departments/10', route => {
     if (route.request().method() === 'PUT') {
       putBody = route.request().postDataJSON();
-      return route.fulfill({ json: { ...rootDepartment, name: putBody.name } });
+      workspace.department.name = putBody.name;
+      return route.fulfill({ json: workspace.department });
     }
     return route.fulfill({ json: rootDepartment });
   });
@@ -123,7 +141,11 @@ test('编辑部门应提交改名并提示成功', async ({ page }) => {
   await drawer.getByRole('button', { name: '保存修改' }).click();
 
   await expect(page.getByText('部门已更新')).toBeVisible();
+  await expect(page.locator('.workspace-summary h2')).toHaveText('集团总部');
+  await expect(page.locator('.organization-tree')).toContainText('集团总部');
+  await expect(page.locator('.organization-layout')).toHaveAttribute('aria-busy', 'false');
   expect(putBody).toEqual({ name: '集团总部', parentId: null, sortOrder: 0, status: 1 });
+  expect(apiFailures).toEqual([]);
 });
 
 test('删除部门被拒时应展示后端保护文案', async ({ page }) => {
@@ -260,13 +282,18 @@ test('画像有效权限只读并可跳转用户管理', async ({ page }) => {
 });
 
 test('添加已有成员应把未分配用户挂到当前部门', async ({ page }) => {
+  const apiFailures = trackApiFailures(page);
   await mockShell(page);
-  await mockWorkspaceBase(page);
+  const workspace = makeWorkspace();
+  await mockWorkspaceBase(page, workspace);
   let putBody = null;
   await page.route('**/iam/admin/users/sid-bob', route => {
     if (route.request().method() === 'PUT') {
       putBody = route.request().postDataJSON();
-      return route.fulfill({ json: { ...bob, departmentId: 10, departmentName: '总部' } });
+      const updated = { ...bob, departmentId: 10, departmentName: '总部' };
+      workspace.members.content = [alice, updated];
+      workspace.members.totalElements = 2;
+      return route.fulfill({ json: updated });
     }
     return route.fulfill({ json: bob });
   });
@@ -283,16 +310,25 @@ test('添加已有成员应把未分配用户挂到当前部门', async ({ page 
   await drawer.getByRole('button', { name: '添加选中的 1 名成员' }).click();
 
   await expect(page.getByText('已把 1 名成员加入总部')).toBeVisible();
+  await expect(page.locator('.responsive-table tbody tr', { hasText: 'bob' })).toContainText('鲍勃');
+  await expect(page.locator('.workspace-summary')).toContainText('直属成员 2 人');
+  await expect(page.locator('.organization-tree .tree-node').first()).toContainText('2 人');
+  await expect(page.locator('.organization-layout')).toHaveAttribute('aria-busy', 'false');
   expect(putBody).toMatchObject({ displayName: '鲍勃', email: '', phone: '', departmentId: 10, clearDepartment: false });
+  expect(apiFailures).toEqual([]);
 });
 
 test('移除成员应清空归属且不影响账号', async ({ page }) => {
+  const apiFailures = trackApiFailures(page);
   await mockShell(page);
-  await mockWorkspaceBase(page);
+  const workspace = makeWorkspace();
+  await mockWorkspaceBase(page, workspace);
   let putBody = null;
   await page.route('**/iam/admin/users/sid-alice', route => {
     if (route.request().method() === 'PUT') {
       putBody = route.request().postDataJSON();
+      workspace.members.content = [];
+      workspace.members.totalElements = 0;
       return route.fulfill({ json: { ...alice, departmentId: null, departmentName: null } });
     }
     return route.fulfill({ json: alice });
@@ -307,5 +343,11 @@ test('移除成员应清空归属且不影响账号', async ({ page }) => {
 
   await dialog.getByRole('button', { name: '确认移出' }).click();
   await expect(page.getByText('已将 爱丽丝 移出部门')).toBeVisible();
+  await expect(page.locator('.responsive-table tbody')).not.toContainText('alice');
+  await expect(page.locator('.responsive-table tbody')).toContainText('暂无符合条件的直属成员');
+  await expect(page.locator('.workspace-summary')).toContainText('直属成员 0 人');
+  await expect(page.locator('.organization-tree .tree-node').first()).toContainText('0 人');
+  await expect(page.locator('.organization-layout')).toHaveAttribute('aria-busy', 'false');
   expect(putBody).toMatchObject({ displayName: '爱丽丝', departmentId: null, clearDepartment: true });
+  expect(apiFailures).toEqual([]);
 });

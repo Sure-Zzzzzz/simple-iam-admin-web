@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
@@ -15,6 +15,7 @@ import {
   createUser,
   deleteDepartment,
   fetchDepartmentRoles,
+  fetchRole,
   fetchOrganizationDepartmentWorkspace,
   fetchOrganizationTree,
   fetchOrganizationUserProfile,
@@ -23,6 +24,8 @@ import {
   fetchUserGroups,
   fetchDepartments,
   permissionTypeLabel,
+  isRolePreconditionError,
+  sameRoleSnapshot,
   revokeDepartmentRole,
   revokeUserGroupUser,
   revokeUserRole,
@@ -62,7 +65,7 @@ const profileDrawerOpen = ref(false);
 const editDrawerOpen = ref(false);
 const deleteDialogOpen = ref(false);
 const deletePending = ref(false);
-const relationshipTarget = ref<{ type: 'group' | 'role' | 'departmentRole'; id: number; name: string } | null>(null);
+const relationshipTarget = ref<{ type: 'group' | 'role' | 'departmentRole'; id: number; name: string; departmentId?: number; workspaceRequest?: number; role?: IamRole } | null>(null);
 const relationshipPending = ref(false);
 const message = ref('');
 const errorMessage = ref('');
@@ -77,6 +80,7 @@ const departmentForm = reactive({ id: '', name: '' });
 const bindableUsers = ref<IamUser[]>([]);
 const memberOptionsLoading = ref(false);
 const selectedMemberIds = ref<Set<string>>(new Set());
+let workspaceRequest = 0;
 
 const treeSearchKeyword = ref('');
 const treeRows = computed<TreeRow[]>(() => {
@@ -109,7 +113,7 @@ const assignableGroups = computed(() => {
 const assignableRoles = computed(() => {
   const keyword = assignableRoleQuery.value.trim().toLowerCase();
   return allRoles.value
-    .filter(role => !assignedRoleIds.value.has(role.id))
+    .filter(role => !role.openRoleBinding && !assignedRoleIds.value.has(role.id))
     .filter(role => !keyword || role.name.toLowerCase().includes(keyword) || role.code.toLowerCase().includes(keyword));
 });
 const assignedDepartmentRoleIds = computed(() => new Set(departmentRoles.value.map(role => role.id)));
@@ -119,6 +123,9 @@ const assignableDepartmentRoles = computed(() => {
   const keyword = assignableDepartmentRoleQuery.value.trim().toLowerCase();
   return allRoles.value
     .filter(role => !assignedDepartmentRoleIds.value.has(role.id))
+    .filter(role => !role.openRoleBinding || (role.openRoleBinding.state === 'ACTIVE'
+      && selectedDepartmentId.value !== null
+      && departmentDescendantIds(role.openRoleBinding.rootDepartmentId).has(selectedDepartmentId.value)))
     .filter(role => !keyword || role.name.toLowerCase().includes(keyword) || role.code.toLowerCase().includes(keyword));
 });
 
@@ -196,6 +203,7 @@ function goToUsersView() {
 }
 
 async function loadWorkspace(departmentId: number, page = memberQuery.page) {
+  const requestId = ++workspaceRequest;
   loading.value = true;
   errorMessage.value = '';
   try {
@@ -210,17 +218,21 @@ async function loadWorkspace(departmentId: number, page = memberQuery.page) {
       }),
       fetchDepartmentRoles(departmentId)
     ]);
+    if (requestId !== workspaceRequest) return;
     workspace.value = workspaceResult;
     departmentRoles.value = roles;
     memberTotalPages.value = Math.max(workspace.value.members.totalPages, 1);
   } catch (error) {
+    if (requestId !== workspaceRequest) return;
     errorMessage.value = error instanceof Error ? error.message : '';
   } finally {
-    loading.value = false;
+    if (requestId === workspaceRequest) loading.value = false;
   }
 }
 
 function selectDepartment(departmentId: number) {
+  relationshipTarget.value = null;
+  relationshipPending.value = false;
   memberQuery.keyword = '';
   memberQuery.status = '';
   void loadWorkspace(departmentId, 1);
@@ -503,7 +515,7 @@ async function addUserGroup(groupId: number) {
 }
 
 async function addRole(roleId: number) {
-  if (!profile.value) return;
+  if (!profile.value || !assignableRoles.value.some(role => role.id === roleId)) return;
   try {
     await assignUserRole(profile.value.user.subjectId, roleId);
     profile.value = await fetchOrganizationUserProfile(profile.value.user.subjectId);
@@ -512,21 +524,81 @@ async function addRole(roleId: number) {
 }
 
 async function addDepartmentRole(roleId: number) {
-  if (!selectedDepartmentId.value) return;
+  const role = assignableDepartmentRoles.value.find(candidate => candidate.id === roleId);
+  const departmentId = selectedDepartmentId.value;
+  const requestId = workspaceRequest;
+  if (!departmentId || !role || relationshipPending.value || loading.value || workspace.value?.department.id !== departmentId) return;
+  relationshipPending.value = true;
+  message.value = '';
+  errorMessage.value = '';
   try {
-    await assignDepartmentRole(selectedDepartmentId.value, roleId);
-    departmentRoles.value = await fetchDepartmentRoles(selectedDepartmentId.value);
+    const detail = role.openRoleBinding ? await readDepartmentRole(role, departmentId, requestId) : role;
+    if (!detail || requestId !== workspaceRequest) return;
+    await assignDepartmentRole(departmentId, roleId, detail.openRoleBinding);
+    if (requestId !== workspaceRequest) return;
+    const [assigned, catalog] = await Promise.all([fetchDepartmentRoles(departmentId), fetchRoles()]);
+    if (requestId !== workspaceRequest || selectedDepartmentId.value !== departmentId) return;
+    departmentRoles.value = assigned;
+    allRoles.value = catalog;
     message.value = '角色已挂载到部门，部门全体成员将继承该角色';
-  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '挂载部门角色失败'; }
+  } catch (error) {
+    await handleDepartmentRoleError(error, departmentId, requestId);
+  } finally {
+    if (requestId === workspaceRequest) relationshipPending.value = false;
+  }
+}
+
+async function readDepartmentRole(shown: IamRole, departmentId: number, requestId: number): Promise<IamRole | null> {
+  const detail = await fetchRole(shown.id);
+  if (requestId !== workspaceRequest) return null;
+  if (sameRoleSnapshot(shown, detail)) return detail;
+  const [assigned, catalog] = await Promise.all([fetchDepartmentRoles(departmentId), fetchRoles()]);
+  if (requestId !== workspaceRequest) return null;
+  departmentRoles.value = assigned;
+  allRoles.value = catalog;
+  relationshipTarget.value = null;
+  errorMessage.value = '角色信息已发生变化，已重新加载。请核对最新内容后重新确认操作。';
+  return null;
+}
+
+async function handleDepartmentRoleError(error: unknown, departmentId: number, requestId: number) {
+  if (requestId !== workspaceRequest || selectedDepartmentId.value !== departmentId) return;
+  if (isRolePreconditionError(error)) {
+    relationshipTarget.value = null;
+    try {
+      const [assigned, catalog] = await Promise.all([fetchDepartmentRoles(departmentId), fetchRoles()]);
+      if (requestId !== workspaceRequest || selectedDepartmentId.value !== departmentId) return;
+      departmentRoles.value = assigned;
+      allRoles.value = catalog;
+      errorMessage.value = '角色已发生变化，已重新加载。请核对最新内容后重新确认操作。';
+    } catch (refreshError) {
+      if (requestId !== workspaceRequest) return;
+      allRoles.value = [];
+      departmentRoles.value = [];
+      errorMessage.value = refreshError instanceof Error ? `重新加载角色失败：${refreshError.message}` : '重新加载角色失败';
+    }
+    return;
+  }
+  errorMessage.value = error instanceof Error ? error.message : '部门角色操作失败';
 }
 
 function requestRemoveUserGroup(group: IamUserGroup) { relationshipTarget.value = { type: 'group', id: group.id, name: group.name }; }
-function requestRemoveRole(role: IamRole) { relationshipTarget.value = { type: 'role', id: role.id, name: role.name }; }
-function requestRemoveDepartmentRole(role: IamRole) { relationshipTarget.value = { type: 'departmentRole', id: role.id, name: role.name }; }
+function requestRemoveRole(role: IamRole) {
+  if (!role.openRoleBinding) relationshipTarget.value = { type: 'role', id: role.id, name: role.name };
+}
+function requestRemoveDepartmentRole(role: IamRole) {
+  if (!selectedDepartmentId.value || relationshipPending.value || loading.value || workspace.value?.department.id !== selectedDepartmentId.value) return;
+  relationshipTarget.value = { type: 'departmentRole', id: role.id, name: role.name, departmentId: selectedDepartmentId.value, workspaceRequest, role: { ...role, openRoleBinding: role.openRoleBinding ? { ...role.openRoleBinding } : null } };
+}
 
 async function confirmRemoveRelationship() {
   const target = relationshipTarget.value;
   if (!target) return;
+  if (target.type === 'departmentRole' && target.workspaceRequest !== workspaceRequest) {
+    relationshipTarget.value = null;
+    return;
+  }
+  const requestId = workspaceRequest;
   if (target.type !== 'departmentRole' && !profile.value) return;
   relationshipPending.value = true;
   message.value = '';
@@ -541,20 +613,28 @@ async function confirmRemoveRelationship() {
       message.value = '成员的直接角色已移除，有效权限会相应变化';
       profile.value = await fetchOrganizationUserProfile(profile.value!.user.subjectId);
     } else {
-      if (!selectedDepartmentId.value) throw new Error('未选中部门');
-      await revokeDepartmentRole(selectedDepartmentId.value, target.id);
-      departmentRoles.value = await fetchDepartmentRoles(selectedDepartmentId.value);
+      if (!target.departmentId) throw new Error('未选中部门');
+      const detail = target.role?.openRoleBinding ? await readDepartmentRole(target.role, target.departmentId, requestId) : target.role;
+      if (!detail || requestId !== workspaceRequest) return;
+      await revokeDepartmentRole(target.departmentId, target.id, detail.openRoleBinding);
+      if (requestId !== workspaceRequest) return;
+      const [assigned, catalog] = await Promise.all([fetchDepartmentRoles(target.departmentId), fetchRoles()]);
+      if (requestId !== workspaceRequest || selectedDepartmentId.value !== target.departmentId) return;
+      departmentRoles.value = assigned;
+      allRoles.value = catalog;
       message.value = '部门角色已撤销，该部门成员将不再继承此角色';
     }
     relationshipTarget.value = null;
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '移除成员关系失败';
+    if (target.type === 'departmentRole' && target.departmentId) await handleDepartmentRoleError(error, target.departmentId, requestId);
+    else errorMessage.value = error instanceof Error ? error.message : '移除成员关系失败';
   } finally {
-    relationshipPending.value = false;
+    if (requestId === workspaceRequest) relationshipPending.value = false;
   }
 }
 
 onMounted(loadInitialData);
+onUnmounted(() => { workspaceRequest++; });
 </script>
 
 <template>
@@ -575,7 +655,23 @@ onMounted(loadInitialData);
 
         <section class="admin-data-surface"><header class="data-toolbar"><div><h2>直属成员 <span>{{ workspace.members.totalElements }}</span></h2><p>成员详情中可维护部门、协作组和直接角色。</p></div><div class="admin-page-actions"><button class="button-secondary" type="button" @click="openAddMemberDrawer">添加成员</button></div></header><div class="data-toolbar user-filter-bar member-filter-bar"><input v-model="memberQuery.keyword" type="search" placeholder="搜索用户名 / 显示名" @keyup.enter="resetMemberPageAndLoad"><FormSelect v-model="memberQuery.status" :options="memberStatusOptions" aria-label="成员状态筛选" @change="resetMemberPageAndLoad" /></div><div class="responsive-table"><table><thead><tr><th>成员</th><th>状态</th><th class="table-actions">操作</th></tr></thead><tbody><tr v-for="user in workspace.members.content" :key="user.subjectId"><td><button class="table-primary-action" type="button" @click="openUserProfile(user)"><strong>{{ user.displayName || user.username }}</strong><span>{{ user.username }}</span></button></td><td><span class="status-badge" :class="{ builtIn: user.status !== 1 }">{{ user.status === 1 ? '启用' : '停用' }}</span></td><td class="table-actions"><button class="table-action" type="button" @click="openUserProfile(user)">查看关系</button><button class="table-action danger" type="button" @click="removeMemberTarget = user">移除</button></td></tr><tr v-if="!workspace.members.content.length"><td colspan="3"><div class="table-empty">暂无符合条件的直属成员。</div></td></tr></tbody></table></div><Pagination v-if="workspace.members.totalElements > 0" :current="memberQuery.page" :total="workspace.members.totalElements" :page-size="memberPageSize" @update:current="changeMemberPage" @update:page-size="changeMemberPageSize" /></section>
 
-        <section class="admin-data-surface assignment-section"><header><div><h3>部门角色 <span>{{ departmentRoles.length }}</span></h3><p>挂载到部门的角色由该部门全体成员自动继承，无需逐人分配；撤销时若涉及最后一位系统管理员会被拒绝。</p></div></header><div v-if="departmentRoles.length" class="assignment-list"><article v-for="role in departmentRoles" :key="role.id"><div><strong>{{ role.name }}</strong><span>{{ role.code }}</span></div><button class="table-action danger" type="button" @click="requestRemoveDepartmentRole(role)">撤销</button></article></div><p v-else class="assignment-empty">尚未挂载部门角色。</p><div v-if="allRoles.length > assignedDepartmentRoleIds.size" class="assignment-list available"><label class="search-field"><span class="sr-only">搜索可挂载角色</span><input v-model="assignableDepartmentRoleQuery" type="search" placeholder="搜索角色名称或编码"></label><article v-for="role in assignableDepartmentRoles" :key="role.id"><div><strong>{{ role.name }}</strong><span>{{ role.code }}</span></div><button class="table-action" type="button" @click="addDepartmentRole(role.id)">挂载</button></article></div></section>
+        <section class="admin-data-surface assignment-section">
+          <header><div><h3>部门角色 <span>{{ departmentRoles.length }}</span></h3><p>挂载到部门的角色由该部门全体成员自动继承，无需逐人分配；撤销时若涉及最后一位系统管理员会被拒绝。</p></div></header>
+          <div v-if="departmentRoles.length" class="assignment-list">
+            <article v-for="role in departmentRoles" :key="role.id">
+              <div><strong>{{ role.name }}</strong><span>{{ role.code }}</span><span v-if="role.openRoleBinding">受委托 · 应用 {{ role.openRoleBinding.applicationId }} · 根部门 {{ role.openRoleBinding.rootDepartmentId }} · 版本 {{ role.openRoleBinding.revision }}</span></div>
+              <button class="table-action danger" type="button" :disabled="relationshipPending || loading" @click="requestRemoveDepartmentRole(role)">撤销</button>
+            </article>
+          </div>
+          <p v-else class="assignment-empty">尚未挂载部门角色。</p>
+          <div v-if="allRoles.length > assignedDepartmentRoleIds.size" class="assignment-list available">
+            <label class="search-field"><span class="sr-only">搜索可挂载角色</span><input v-model="assignableDepartmentRoleQuery" type="search" placeholder="搜索角色名称或编码"></label>
+            <article v-for="role in assignableDepartmentRoles" :key="role.id">
+              <div><strong>{{ role.name }}</strong><span>{{ role.code }}</span><span v-if="role.openRoleBinding">受委托 · 应用 {{ role.openRoleBinding.applicationId }} · 根部门 {{ role.openRoleBinding.rootDepartmentId }} · 版本 {{ role.openRoleBinding.revision }}</span></div>
+              <button class="table-action" type="button" :disabled="relationshipPending || loading" @click="addDepartmentRole(role.id)">挂载</button>
+            </article>
+          </div>
+        </section>
       </div>
     </div>
 

@@ -146,24 +146,42 @@ test('撤销授权应经确认框操作且确认框渲染在子应用容器内',
 });
 
 test('绑定外部身份应提交登录方式与外部标识', async ({ page }) => {
+  const apiFailures: string[] = [];
+  page.on('requestfailed', request => {
+    if (new URL(request.url()).pathname.startsWith('/iam/')) apiFailures.push(`${request.method()} ${request.url()}`);
+  });
+  page.on('response', response => {
+    if (new URL(response.url()).pathname.startsWith('/iam/') && response.status() >= 500) apiFailures.push(`${response.status()} ${response.url()}`);
+  });
   let bindBody = null;
   await mockBase(page, { value: [] });
-  const localUsersPage = { ...usersPage, content: [{ ...usersPage.content[0], identitySource: null }] };
+  const localUsersPage = { ...usersPage, content: [{ ...usersPage.content[0], identitySource: null as string | null }] };
   await page.route('**/iam/admin/users?**', route => route.fulfill({ json: localUsersPage }));
   await page.route('**/iam/admin/users/sid-alice/external-identity', route => {
     bindBody = route.request().postDataJSON();
+    localUsersPage.content[0].identitySource = bindBody.providerCode;
     return route.fulfill({ json: {} });
   });
 
   await page.goto('/app/iam/users');
+  const initialAuthorizations = page.waitForResponse(response => new URL(response.url()).pathname === '/iam/admin/users/sid-alice/application-authorizations' && response.request().method() === 'GET');
   await page.locator('tbody button').first().click();
+  await (await initialAuthorizations).finished();
 
   const bindForm = page.locator('form', { hasText: '绑定外部身份' });
   await bindForm.getByRole('button', { name: '登录方式' }).click();
   await page.getByRole('option', { name: 'LDAP 登录（ldap-password）', exact: true }).click();
   await bindForm.locator('input').fill('uid=alice,ou=people,dc=example');
+  const reloadedAuthorizations = page.waitForResponse(response => new URL(response.url()).pathname === '/iam/admin/users/sid-alice/application-authorizations' && response.request().method() === 'GET');
   await bindForm.getByRole('button', { name: '绑定外部身份' }).click();
 
-  await expect(page.getByText('外部身份已绑定')).toBeVisible();
+  await expect(page.getByText('外部身份已绑定', { exact: true })).toBeVisible();
+  const authorizationResponse = await reloadedAuthorizations;
+  expect(authorizationResponse.status()).toBe(200);
+  expect(await authorizationResponse.finished()).toBeNull();
+  await expect(page.locator('.external-identity-bound')).toContainText('已绑定 LDAP（ldap-password）');
+  await expect(page.locator('form', { hasText: '绑定外部身份' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '查询', exact: true })).toBeEnabled();
   expect(bindBody).toEqual({ providerCode: 'ldap-password', externalId: 'uid=alice,ou=people,dc=example' });
+  expect(apiFailures).toEqual([]);
 });

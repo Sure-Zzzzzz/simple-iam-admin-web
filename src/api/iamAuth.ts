@@ -74,6 +74,37 @@ export interface IamRole {
   name: string;
   description: string | null;
   builtIn: number;
+  // 旧版服务未返回此字段；1.3.2 普通角色为 null。
+  openRoleBinding?: OpenRoleBinding | null;
+}
+
+export interface OpenRoleBinding {
+  openRoleId: string;
+  applicationId: number;
+  rootDepartmentId: number;
+  revision: number;
+  state: 'ACTIVE' | 'DELETED';
+}
+
+function openRoleCondition(binding?: OpenRoleBinding | null): Pick<RequestInit, 'headers'> {
+  return binding ? { headers: { 'If-Match': `"open-role:${binding.openRoleId}:${binding.revision}"` } } : {};
+}
+
+export function isRolePreconditionError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const status = (error as { httpStatus?: number }).httpStatus;
+  return status === 412 || status === 428;
+}
+
+export function sameRoleSnapshot(shown: IamRole, detail: IamRole): boolean {
+  const first = shown.openRoleBinding;
+  const second = detail.openRoleBinding;
+  return shown.name === detail.name && shown.code === detail.code
+    && first?.openRoleId === second?.openRoleId
+    && first?.applicationId === second?.applicationId
+    && first?.rootDepartmentId === second?.rootDepartmentId
+    && first?.state === second?.state
+    && first?.revision === second?.revision;
 }
 
 export type RoleSource = 'direct' | 'department_inherited';
@@ -783,13 +814,13 @@ export async function fetchDepartmentRoles(departmentId: number): Promise<IamRol
 }
 
 // 挂载后部门全体成员（个人直接角色之外）自动继承该角色
-export async function assignDepartmentRole(departmentId: number, roleId: number): Promise<void> {
-  await request(`/iam/admin/departments/${departmentId}/roles/${roleId}`, { method: 'POST' });
+export async function assignDepartmentRole(departmentId: number, roleId: number, binding?: OpenRoleBinding | null): Promise<void> {
+  await request(`/iam/admin/departments/${departmentId}/roles/${roleId}`, { method: 'POST', ...openRoleCondition(binding) });
 }
 
 // 撤销 iam_admin 等最后管理员保护角色可能返回 409，错误消息需原样展示
-export async function revokeDepartmentRole(departmentId: number, roleId: number): Promise<void> {
-  await request(`/iam/admin/departments/${departmentId}/roles/${roleId}`, { method: 'DELETE' });
+export async function revokeDepartmentRole(departmentId: number, roleId: number, binding?: OpenRoleBinding | null): Promise<void> {
+  await request(`/iam/admin/departments/${departmentId}/roles/${roleId}`, { method: 'DELETE', ...openRoleCondition(binding) });
 }
 
 export async function fetchUserGroups(): Promise<IamUserGroup[]> {
@@ -862,6 +893,10 @@ export async function fetchRoles(): Promise<IamRole[]> {
   return request('/iam/admin/roles');
 }
 
+export async function fetchRole(roleId: number): Promise<IamRole> {
+  return request(`/iam/admin/roles/${roleId}`);
+}
+
 export async function fetchRolePage(query: PageQuery = {}): Promise<PageResponse<IamRole>> {
   return request(`/iam/admin/roles/page?${toPageSearchParams(query).toString()}`);
 }
@@ -873,15 +908,16 @@ export async function createRole(payload: RolePayload): Promise<IamRole> {
   });
 }
 
-export async function updateRole(roleId: number, payload: RolePayload): Promise<IamRole> {
+export async function updateRole(roleId: number, payload: RolePayload, binding?: OpenRoleBinding | null): Promise<IamRole> {
   return request(`/iam/admin/roles/${roleId}`, {
     method: 'PUT',
+    ...openRoleCondition(binding),
     body: JSON.stringify(payload)
   });
 }
 
-export async function deleteRole(roleId: number): Promise<void> {
-  await request(`/iam/admin/roles/${roleId}`, { method: 'DELETE' });
+export async function deleteRole(roleId: number, binding?: OpenRoleBinding | null): Promise<void> {
+  await request(`/iam/admin/roles/${roleId}`, { method: 'DELETE', ...openRoleCondition(binding) });
 }
 
 export async function fetchRolePermissions(roleId: number): Promise<IamPermission[]> {
@@ -944,16 +980,18 @@ export async function fetchRoleAuthorizationRule(
 export async function putRoleAuthorizationRule(
   roleId: number,
   applicationId: number,
-  payload: PutRoleAuthorizationRulePayload
+  payload: PutRoleAuthorizationRulePayload,
+  binding?: OpenRoleBinding | null
 ): Promise<RoleAuthorizationRule> {
   return request(`/iam/admin/roles/${roleId}/authorization-rules/${applicationId}`, {
     method: 'PUT',
+    ...openRoleCondition(binding),
     body: JSON.stringify(payload)
   });
 }
 
-export async function deleteRoleAuthorizationRule(roleId: number, applicationId: number): Promise<void> {
-  await request(`/iam/admin/roles/${roleId}/authorization-rules/${applicationId}`, { method: 'DELETE' });
+export async function deleteRoleAuthorizationRule(roleId: number, applicationId: number, binding?: OpenRoleBinding | null): Promise<void> {
+  await request(`/iam/admin/roles/${roleId}/authorization-rules/${applicationId}`, { method: 'DELETE', ...openRoleCondition(binding) });
 }
 
 export async function fetchPermissions(): Promise<IamPermission[]> {
@@ -1251,7 +1289,7 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
     } catch {
       // 非 JSON 响应体（如网关纯文本错误），保持原文展示
     }
-    throw new Error(message || '请求失败');
+    throw withHttpStatus(new Error(message || '请求失败'), response.status);
   }
   if (response.status === 204) {
     return undefined as T;

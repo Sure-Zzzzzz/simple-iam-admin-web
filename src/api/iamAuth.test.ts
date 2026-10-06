@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   UnauthorizedError,
   assignRolePermission,
+  assignDepartmentRole,
   assignUserRole,
   configureAdminNavigator,
   assignUserGroupUser,
@@ -16,6 +17,8 @@ import {
   deleteDepartment,
   deleteUser,
   deleteRoleAuthorizationRule,
+  deleteRole,
+  fetchRole,
   fetchActiveSessions,
   fetchAdminDashboard,
   fetchApplicationPermissionManifest,
@@ -37,10 +40,13 @@ import {
   fetchUsers,
   grantUserApplication,
   permissionTypeLabel,
+  isRolePreconditionError,
+  sameRoleSnapshot,
   putApplicationPermissionManifest,
   putRoleAuthorizationRule,
   resetUserPassword,
   revokeRolePermission,
+  revokeDepartmentRole,
   revokeUserSessions,
   revokeUserGroupUser,
   revokeUserRole,
@@ -49,6 +55,7 @@ import {
   updateTrustedApplicationOwnerInheritance,
   updateTrustedApplicationClient,
   updateDepartment,
+  updateRole,
   updatePortalApplicationOrder,
   updateUserGroup
 } from './iamAuth';
@@ -59,6 +66,57 @@ describe('admin iamAuth api', () => {
     configureAdminNavigator();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('受委托角色全部写入口使用已回读版本的强 If-Match，普通角色不新增条件头', async () => {
+    const bridge = vi.fn().mockResolvedValue(undefined);
+    setAdminRequestBridge(bridge);
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const headers = { 'If-Match': '"open-role:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:4"' };
+    const payload = { name: '部门操作员', description: '' };
+    const rule = { pagePermissions: [], apiPermissions: [], dataGrantTemplate: null };
+    await fetchRole(4);
+    await updateRole(4, payload, binding);
+    await deleteRole(4, binding);
+    await putRoleAuthorizationRule(4, 7, rule, binding);
+    await deleteRoleAuthorizationRule(4, 7, binding);
+    await assignDepartmentRole(10, 4, binding);
+    await revokeDepartmentRole(10, 4, binding);
+    expect(bridge).toHaveBeenNthCalledWith(1, '/iam/admin/roles/4', {});
+    expect(bridge).toHaveBeenNthCalledWith(2, '/iam/admin/roles/4', { method: 'PUT', headers, body: JSON.stringify(payload) });
+    expect(bridge).toHaveBeenNthCalledWith(3, '/iam/admin/roles/4', { method: 'DELETE', headers });
+    expect(bridge).toHaveBeenNthCalledWith(4, '/iam/admin/roles/4/authorization-rules/7', { method: 'PUT', headers, body: JSON.stringify(rule) });
+    expect(bridge).toHaveBeenNthCalledWith(5, '/iam/admin/roles/4/authorization-rules/7', { method: 'DELETE', headers });
+    expect(bridge).toHaveBeenNthCalledWith(6, '/iam/admin/departments/10/roles/4', { method: 'POST', headers });
+    expect(bridge).toHaveBeenNthCalledWith(7, '/iam/admin/departments/10/roles/4', { method: 'DELETE', headers });
+    await updateRole(4, payload, null);
+    expect(bridge).toHaveBeenLastCalledWith('/iam/admin/roles/4', { method: 'PUT', body: JSON.stringify(payload) });
+  });
+
+  it.each([412, 428])('独立请求保留 %s 状态用于重新确认，不自动重试写请求', async status => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve(url.endsWith('/csrf')
+      ? { ok: true, json: async () => ({ headerName: 'X-CSRF-TOKEN', token: 'csrf-token' }) }
+      : { ok: false, status, text: async () => JSON.stringify({ message: '条件不满足' }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const error = await deleteRole(4).catch(error => error as unknown);
+    expect(isRolePreconditionError(error)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(isRolePreconditionError(new Error('其他错误'))).toBe(false);
+  });
+
+  it('角色详情一致性覆盖名称、编码、固定边界、状态和版本，不能直接换用新版本', () => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const role = { id: 20, name: '客户应用角色', code: 'open_demo', description: '', builtIn: 0, openRoleBinding: binding };
+    expect(sameRoleSnapshot(role, { ...role, openRoleBinding: { ...binding } })).toBe(true);
+    for (const detail of [
+      { ...role, name: '新名称' }, { ...role, code: 'new_code' },
+      { ...role, openRoleBinding: { ...binding, openRoleId: 'ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee' } },
+      { ...role, openRoleBinding: { ...binding, applicationId: 8 } },
+      { ...role, openRoleBinding: { ...binding, rootDepartmentId: 11 } },
+      { ...role, openRoleBinding: { ...binding, revision: 5 } },
+      { ...role, openRoleBinding: { ...binding, state: 'DELETED' as const } },
+      { ...role, openRoleBinding: null }
+    ]) expect(sameRoleSnapshot(role, detail)).toBe(false);
   });
 
   it('fetchUsers 应通过 portal bridge 使用 1 基分页读取用户且不包含密码哈希', async () => {

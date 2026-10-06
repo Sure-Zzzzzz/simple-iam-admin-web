@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import EntityDrawer from '../components/EntityDrawer.vue';
@@ -14,6 +14,7 @@ import {
   fetchApplicationPermissionManifest,
   fetchDepartments,
   fetchPermissions,
+  fetchRole,
   fetchRoleAuthorizationRule,
   fetchRoleDepartments,
   fetchRoleMemberPage,
@@ -23,6 +24,7 @@ import {
   fetchUserGroups,
   fetchUsers,
   permissionTypeLabel,
+  isRolePreconditionError,
   putRoleAuthorizationRule,
   revokeRolePermission,
   revokeUserRole,
@@ -54,8 +56,42 @@ const deleteTarget = ref<IamRole | null>(null);
 const deleteMemberCount = ref<number | null>(null);
 const revokePermissionTarget = ref<IamPermission | null>(null);
 const deletePending = ref(false);
+const deleteReadPending = ref(false);
+let deleteReadRequest = 0;
 const submitting = ref(false);
 const permissionPending = ref(false);
+const delegatedRole = computed(() => currentRole.value?.openRoleBinding ?? null);
+const roleVersionReady = ref(true);
+let roleDetailRequest = 0;
+let roleWriteOperation = 0;
+
+async function refreshDelegatedRole(role: IamRole, requestId: number, operationId: number): Promise<boolean> {
+  if (operationId !== roleWriteOperation || requestId !== roleDetailRequest) return false;
+  roleVersionReady.value = false;
+  const refreshed = await fetchRole(role.id);
+  if (operationId !== roleWriteOperation || requestId !== roleDetailRequest || currentRole.value?.id !== role.id) return false;
+  const loaded = await openRoleDetail(refreshed, true, true, operationId);
+  if (operationId !== roleWriteOperation) return false;
+  if (!loaded) throw new Error('角色详情未能完整加载');
+  return true;
+}
+
+async function handleRoleWriteError(error: unknown, role: IamRole, requestId: number, operationId: number, fallback: string) {
+  if (operationId !== roleWriteOperation || currentRole.value?.id !== role.id) return;
+  if (isRolePreconditionError(error)) {
+    deleteTarget.value = null;
+    try {
+      if (!await refreshDelegatedRole(role, requestId, operationId)) return;
+      errorMessage.value = '角色已发生变化，已重新加载。请核对最新内容后重新确认操作。';
+    } catch (refreshError) {
+      if (operationId !== roleWriteOperation) return;
+      roleVersionReady.value = false;
+      errorMessage.value = refreshError instanceof Error ? `重新加载角色失败：${refreshError.message}。请关闭详情后重新打开。` : fallback;
+    }
+    return;
+  }
+  errorMessage.value = error instanceof Error ? error.message : fallback;
+}
 
 const ruleApplications = ref<TrustedApplication[]>([]);
 // 多应用并行编辑：每个勾选的应用一份独立编辑器，activeRuleAppId 指向当前页签
@@ -71,6 +107,7 @@ interface RuleEditorState {
 const ruleEditors = ref(new Map<number, RuleEditorState>());
 const activeRuleAppId = ref<number | ''>('');
 const ruleSaving = ref(false);
+const roleWritePending = computed(() => submitting.value || ruleSaving.value || deletePending.value || deleteReadPending.value);
 
 const activeEditor = computed<RuleEditorState | null>(() => {
   return activeRuleAppId.value === '' ? null : ruleEditors.value.get(activeRuleAppId.value) ?? null;
@@ -201,6 +238,7 @@ const roleMemberIds = computed(() => new Set(roleMembers.value.map(user => user.
 const memberSelectedCount = computed(() => memberSelectedIds.value.size);
 
 async function openMemberPicker() {
+  if (delegatedRole.value) return;
   memberPickerOpen.value = true;
   memberCandidateKeyword.value = '';
   memberCandidateDepartmentId.value = '';
@@ -300,7 +338,7 @@ function toggleMemberCandidate(subjectId: string) {
 
 // 分批并发（5 个一批）循环调既有单人绑定接口；失败逐个反馈，已成功的不回滚
 async function confirmAddMembers() {
-  if (!currentRole.value) {
+  if (!currentRole.value || delegatedRole.value) {
     return;
   }
   const role = currentRole.value;
@@ -346,7 +384,7 @@ function requestRevokeMember(user: IamUser) {
 }
 
 async function confirmRevokeMember() {
-  if (!currentRole.value || !revokeMemberTarget.value) {
+  if (!currentRole.value || delegatedRole.value || !revokeMemberTarget.value) {
     return;
   }
   const role = currentRole.value;
@@ -378,8 +416,9 @@ function ensureRoleProjectionRule(roleId: number, applicationId: number): Promis
   if (cached) {
     return cached;
   }
+  const requestId = roleDetailRequest;
   const promise = fetchRoleAuthorizationRule(roleId, applicationId).then(rule => {
-    if (rule) {
+    if (rule && requestId === roleDetailRequest && currentRole.value?.id === roleId) {
       const next = new Map(roleProjectionRules.value);
       next.set(applicationId, rule);
       roleProjectionRules.value = next;
@@ -447,7 +486,7 @@ const filteredRoles = computed(() => {
 // 合并开关：勾选 = 组内缺的码逐个补发；取消（含半选态点击）= 组内已绑的码逐个撤销；
 // 部分失败时列出码名，已生效的不回滚
 async function togglePermissionGroup(row: PermissionGroupRow) {
-  if (!currentRole.value || permissionPending.value) {
+  if (!currentRole.value || delegatedRole.value || permissionPending.value) {
     return;
   }
   const enable = !groupFullyAssigned(row);
@@ -483,24 +522,26 @@ async function togglePermissionGroup(row: PermissionGroupRow) {
   permissionPending.value = false;
 }
 
-async function loadRoles() {
+async function loadRoles(operationId?: number) {
   errorMessage.value = '';
   try {
     const [rolePage, permissionList] = await Promise.all([
       fetchRolePage({ page: 1, size: 100 }),
       fetchPermissions()
     ]);
+    if (operationId !== undefined && operationId !== roleWriteOperation) return;
     roles.value = rolePage.content;
     allPermissions.value = permissionList;
     if (currentRole.value) {
       const refreshed = roles.value.find(role => role.id === currentRole.value?.id);
       if (refreshed) {
-        await openRoleDetail(refreshed, false);
+        await openRoleDetail(refreshed, false, false, operationId);
       } else {
         closeRoleDetail();
       }
     }
   } catch (error) {
+    if (operationId !== undefined && operationId !== roleWriteOperation) return;
     errorMessage.value = error instanceof Error ? error.message : '加载角色失败';
   }
 }
@@ -524,30 +565,54 @@ async function submitCreateRole() {
   }
 }
 
-async function openRoleDetail(role: IamRole, openDrawer = true) {
+async function openRoleDetail(role: IamRole, openDrawer = true, detailAlreadyRead = false, operationId?: number) {
+  if (operationId !== undefined && operationId !== roleWriteOperation) return false;
+  if (operationId === undefined) {
+    roleWriteOperation++;
+    submitting.value = false;
+    ruleSaving.value = false;
+  }
+  const requestId = ++roleDetailRequest;
+  const reloadRules = openDrawer || Boolean(role.openRoleBinding);
   errorMessage.value = '';
+  roleVersionReady.value = !role.openRoleBinding;
   currentRole.value = role;
+  if (reloadRules) resetRuleEditor();
+  assignedPermissions.value = [];
+  roleMembers.value = [];
+  roleDepartments.value = [];
   Object.assign(editForm, { name: role.name, description: role.description || '' });
   try {
+    // 受委托角色必须先回读详情，版本与展示内容一起确认，不在提交前偷换版本。
+    const detail = role.openRoleBinding && !detailAlreadyRead ? await fetchRole(role.id) : role;
+    if (requestId !== roleDetailRequest) return false;
+    currentRole.value = detail;
+    Object.assign(editForm, { name: detail.name, description: detail.description || '' });
     const [permissions, memberPage, departments] = await Promise.all([
       fetchRolePermissions(role.id),
       fetchRoleMemberPage(role.id, { page: 1, size: 100 }),
       fetchRoleDepartments(role.id)
     ]);
+    if (requestId !== roleDetailRequest) return false;
+    roleVersionReady.value = true;
     assignedPermissions.value = permissions;
     roleMembers.value = memberPage.content;
     roleDepartments.value = departments;
-    if (openDrawer) {
-      detailDrawerOpen.value = true;
-      resetRuleEditor();
-      void loadRuleApplications();
-    }
+    if (openDrawer) detailDrawerOpen.value = true;
+    if (reloadRules) void loadRuleApplications();
+    return true;
   } catch (error) {
+    if (requestId !== roleDetailRequest) return false;
     errorMessage.value = error instanceof Error ? error.message : '加载角色详情失败';
+    return false;
   }
 }
 
 function closeRoleDetail() {
+  roleWriteOperation++;
+  submitting.value = false;
+  ruleSaving.value = false;
+  roleDetailRequest++;
   detailDrawerOpen.value = false;
   currentRole.value = null;
   assignedPermissions.value = [];
@@ -559,6 +624,7 @@ function closeRoleDetail() {
 }
 
 function resetRuleEditor() {
+  ruleApplications.value = [];
   ruleEditors.value = new Map();
   activeRuleAppId.value = '';
   roleProjectionRules.value = new Map();
@@ -566,8 +632,12 @@ function resetRuleEditor() {
 }
 
 async function loadRuleApplications() {
+  const requestId = roleDetailRequest;
   try {
-    ruleApplications.value = await fetchAllTrustedApplications();
+    const applications = await fetchAllTrustedApplications();
+    if (requestId !== roleDetailRequest) return;
+    const binding = delegatedRole.value;
+    ruleApplications.value = binding ? applications.filter(application => application.id === binding.applicationId) : applications;
     // 默认选中第一个应用，避免进来先空选一次；已有勾选时不覆盖
     const first = ruleApplications.value[0];
     if (first && ruleEditors.value.size === 0) {
@@ -575,6 +645,7 @@ async function loadRuleApplications() {
     }
     void loadRoleProjectionRules();
   } catch (error) {
+    if (requestId !== roleDetailRequest) return;
     errorMessage.value = error instanceof Error ? error.message : '加载可信应用失败';
   }
 }
@@ -583,18 +654,24 @@ async function loadRuleApplications() {
 // 复用 ensureRoleProjectionRule 缓存，避免与 toggleRuleApplication 默认选中首个应用时重复打接口
 async function loadRoleProjectionRules() {
   const role = currentRole.value;
+  const requestId = roleDetailRequest;
   if (!role) {
     return;
   }
   try {
     await Promise.all(ruleApplications.value.map(application => ensureRoleProjectionRule(role.id, application.id)));
   } catch (error) {
+    if (requestId !== roleDetailRequest) return;
     errorMessage.value = error instanceof Error ? error.message : '加载角色效果预览失败';
   }
 }
 
 // 勾选/取消一个应用的编辑器：勾选即初始化并拉清单+存量规则，取消即整体移除
 async function toggleRuleApplication(applicationId: number) {
+  const role = currentRole.value;
+  const requestId = roleDetailRequest;
+  if (!role || (role.openRoleBinding && role.openRoleBinding.applicationId !== applicationId)) return;
+  if (role.openRoleBinding && ruleEditors.value.has(applicationId)) return;
   if (ruleEditors.value.has(applicationId)) {
     ruleEditors.value.delete(applicationId);
     if (activeRuleAppId.value === applicationId) {
@@ -619,12 +696,14 @@ async function toggleRuleApplication(applicationId: number) {
   }
   try {
     const manifest = await fetchApplicationPermissionManifest(applicationId);
+    if (requestId !== roleDetailRequest || ruleEditors.value.get(applicationId) !== editor) return;
     if (manifest === null) {
       editor.manifestError = '该应用尚未登记权限清单';
       return;
     }
     editor.manifest = manifest;
-    const rule = await ensureRoleProjectionRule(currentRole.value.id, applicationId);
+    const rule = await ensureRoleProjectionRule(role.id, applicationId);
+    if (requestId !== roleDetailRequest || ruleEditors.value.get(applicationId) !== editor) return;
     if (rule !== null) {
       editor.ruleExists = true;
       editor.pagePermissions = new Set(rule.pagePermissions);
@@ -790,7 +869,7 @@ function templateFromGrantRows(editor: RuleEditorState): DataGrantDocument | nul
 
 // 批量保存：对所有勾选且清单就绪的应用逐个全量替换 PUT；部分失败时列出失败应用名
 async function submitRule() {
-  if (!currentRole.value) {
+  if (!currentRole.value || !roleVersionReady.value || roleWritePending.value) {
     return;
   }
   const targets = [...ruleEditors.value.entries()].filter(([, editor]) => editor.manifest);
@@ -798,16 +877,20 @@ async function submitRule() {
     return;
   }
   ruleSaving.value = true;
+  const operationId = ++roleWriteOperation;
+  const role = currentRole.value;
+  const requestId = roleDetailRequest;
   message.value = '';
   errorMessage.value = '';
   const failed: string[] = [];
   for (const [applicationId, editor] of targets) {
     try {
-      const saved = await putRoleAuthorizationRule(currentRole.value.id, applicationId, {
+      const saved = await putRoleAuthorizationRule(role.id, applicationId, {
         pagePermissions: [...editor.pagePermissions],
         apiPermissions: [...editor.apiPermissions],
         dataGrantTemplate: templateFromGrantRows(editor)
-      });
+      }, role.openRoleBinding);
+      if (operationId !== roleWriteOperation) return;
       editor.ruleExists = true;
       editor.pagePermissions = new Set(saved.pagePermissions);
       editor.apiPermissions = new Set(saved.apiPermissions);
@@ -816,15 +899,29 @@ async function submitRule() {
       next.set(applicationId, saved);
       roleProjectionRules.value = next;
     } catch (error) {
+      if (role.openRoleBinding) {
+        await handleRoleWriteError(error, role, requestId, operationId, '保存授权规则失败');
+        if (operationId === roleWriteOperation) ruleSaving.value = false;
+        return;
+      }
       failed.push(applicationName(applicationId) || `应用 ${applicationId}`);
       void error;
     }
   }
+  if (operationId !== roleWriteOperation) return;
   ruleSaving.value = false;
   if (failed.length) {
     errorMessage.value = `以下应用的授权规则保存失败：${failed.join('、')}`;
   } else {
     message.value = `已保存 ${targets.length} 个应用的授权规则`;
+    if (role.openRoleBinding) {
+      try {
+        await refreshDelegatedRole(role, requestId, operationId);
+      } catch (error) {
+        if (operationId !== roleWriteOperation) return;
+        errorMessage.value = error instanceof Error ? `规则已保存，但重新加载角色失败：${error.message}。请关闭详情后重新打开。` : '规则已保存，请重新打开角色详情。';
+      }
+    }
   }
 }
 
@@ -834,15 +931,20 @@ function applicationName(applicationId: number): string {
 }
 
 async function clearRule() {
-  if (!currentRole.value || activeRuleAppId.value === '') {
+  if (!currentRole.value || activeRuleAppId.value === '' || !roleVersionReady.value || roleWritePending.value) {
     return;
   }
   ruleSaving.value = true;
+  const operationId = ++roleWriteOperation;
+  const role = currentRole.value;
+  const applicationId = activeRuleAppId.value;
+  const requestId = roleDetailRequest;
   message.value = '';
   errorMessage.value = '';
   try {
-    await deleteRoleAuthorizationRule(currentRole.value.id, activeRuleAppId.value);
-    const editor = ruleEditors.value.get(activeRuleAppId.value);
+    await deleteRoleAuthorizationRule(role.id, applicationId, role.openRoleBinding);
+    if (operationId !== roleWriteOperation) return;
+    const editor = ruleEditors.value.get(applicationId);
     if (editor) {
       editor.ruleExists = false;
       editor.pagePermissions = new Set();
@@ -850,42 +952,71 @@ async function clearRule() {
       editor.grantRows = [];
     }
     const next = new Map(roleProjectionRules.value);
-    next.delete(activeRuleAppId.value);
+    next.delete(applicationId);
     roleProjectionRules.value = next;
     message.value = '应用授权规则已删除';
+    if (role.openRoleBinding) await refreshDelegatedRole(role, requestId, operationId);
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '删除授权规则失败';
+    await handleRoleWriteError(error, role, requestId, operationId, '删除授权规则失败');
   } finally {
-    ruleSaving.value = false;
+    if (operationId === roleWriteOperation) ruleSaving.value = false;
   }
 }
 
 async function submitRoleEdit() {
-  if (!currentRole.value) {
+  if (!currentRole.value || !roleVersionReady.value || roleWritePending.value) {
     return;
   }
   submitting.value = true;
+  const operationId = ++roleWriteOperation;
+  const role = currentRole.value;
+  const requestId = roleDetailRequest;
   message.value = '';
   errorMessage.value = '';
   try {
-    currentRole.value = await updateRole(currentRole.value.id, { ...editForm });
+    const saved = await updateRole(role.id, { ...editForm }, role.openRoleBinding);
+    if (operationId !== roleWriteOperation) return;
+    currentRole.value = saved;
     message.value = '角色已更新';
-    await loadRoles();
+    await loadRoles(operationId);
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '更新角色失败';
+    await handleRoleWriteError(error, role, requestId, operationId, '更新角色失败');
   } finally {
-    submitting.value = false;
+    if (operationId === roleWriteOperation) submitting.value = false;
   }
 }
 
-function requestDeleteRole(role: IamRole) {
-  deleteTarget.value = role;
+async function requestDeleteRole(role: IamRole) {
+  if (roleWritePending.value) return;
+  const requestId = ++deleteReadRequest;
   deleteMemberCount.value = null;
+  message.value = '';
+  errorMessage.value = '';
+  if (role.openRoleBinding) {
+    deleteTarget.value = null;
+    deleteReadPending.value = true;
+    try {
+      const detail = await fetchRole(role.id);
+      if (requestId !== deleteReadRequest) return;
+      deleteTarget.value = detail;
+    } catch (error) {
+      if (requestId !== deleteReadRequest) return;
+      errorMessage.value = error instanceof Error ? `读取删除确认信息失败：${error.message}` : '读取删除确认信息失败';
+      return;
+    } finally {
+      if (requestId === deleteReadRequest) deleteReadPending.value = false;
+    }
+  } else {
+    deleteTarget.value = role;
+  }
+  const target = deleteTarget.value;
   fetchRoleMemberPage(role.id, { page: 1, size: 1 })
     .then(page => {
+      if (requestId !== deleteReadRequest || deleteTarget.value !== target) return;
       deleteMemberCount.value = page.totalElements;
     })
     .catch(() => {
+      if (requestId !== deleteReadRequest || deleteTarget.value !== target) return;
       deleteMemberCount.value = null;
     });
 }
@@ -895,11 +1026,12 @@ async function confirmDeleteRole() {
     return;
   }
   deletePending.value = true;
+  const role = deleteTarget.value;
   message.value = '';
   errorMessage.value = '';
   try {
-    await deleteRole(deleteTarget.value.id);
-    if (currentRole.value?.id === deleteTarget.value.id) {
+    await deleteRole(role.id, role.openRoleBinding);
+    if (currentRole.value?.id === role.id) {
       closeRoleDetail();
     }
     message.value = '角色已删除';
@@ -907,7 +1039,13 @@ async function confirmDeleteRole() {
     deleteMemberCount.value = null;
     await loadRoles();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '删除角色失败';
+    if (isRolePreconditionError(error)) {
+      deleteTarget.value = null;
+      await loadRoles();
+      errorMessage.value = '角色已发生变化，已重新加载。请核对最新内容后重新确认删除。';
+    } else {
+      errorMessage.value = error instanceof Error ? error.message : '删除角色失败';
+    }
   } finally {
     deletePending.value = false;
   }
@@ -918,7 +1056,7 @@ function requestRevokePermission(permission: IamPermission) {
 }
 
 async function confirmRevokePermission() {
-  if (!currentRole.value || !revokePermissionTarget.value) {
+  if (!currentRole.value || delegatedRole.value || !revokePermissionTarget.value) {
     return;
   }
   permissionPending.value = true;
@@ -938,6 +1076,7 @@ async function confirmRevokePermission() {
 onMounted(() => {
   void loadRoles();
 });
+onUnmounted(() => { roleDetailRequest++; roleWriteOperation++; deleteReadRequest++; });
 </script>
 
 <template>
@@ -976,7 +1115,7 @@ onMounted(() => {
           <tbody>
             <tr v-for="role in filteredRoles" :key="role.id" :class="{ selected: currentRole?.id === role.id }">
               <td>
-                <button class="table-primary-action" type="button" @click="openRoleDetail(role)">
+                <button class="table-primary-action" type="button" :disabled="roleWritePending" @click="openRoleDetail(role)">
                   <strong>{{ role.name }}</strong>
                   <span>{{ role.code }}</span>
                 </button>
@@ -984,12 +1123,12 @@ onMounted(() => {
               <td>{{ role.description || '未填写角色说明' }}</td>
               <td>
                 <span class="status-badge" :class="role.builtIn === 1 ? 'warning' : ''">
-                  {{ role.builtIn === 1 ? '内置角色' : '自定义角色' }}
+                  {{ role.openRoleBinding ? '受委托角色' : (role.builtIn === 1 ? '内置角色' : '自定义角色') }}
                 </span>
               </td>
               <td class="table-actions">
-                <button class="table-action" type="button" @click="openRoleDetail(role)">查看</button>
-                <button v-if="role.builtIn !== 1" class="table-action danger" type="button" @click="requestDeleteRole(role)">删除</button>
+                <button class="table-action" type="button" :disabled="roleWritePending" @click="openRoleDetail(role)">查看</button>
+                <button v-if="role.builtIn !== 1" class="table-action danger" type="button" :disabled="roleWritePending" @click="requestDeleteRole(role)">删除</button>
               </td>
             </tr>
             <tr v-if="filteredRoles.length === 0">
@@ -1012,16 +1151,24 @@ onMounted(() => {
       </form>
     </EntityDrawer>
 
-    <EntityDrawer :open="detailDrawerOpen" :pending="submitting" wide :title="currentRole ? currentRole.name : '角色详情'" :description="currentRole?.code" @close="closeRoleDetail">
+    <EntityDrawer :open="detailDrawerOpen" :pending="roleWritePending" wide :title="currentRole ? currentRole.name : '角色详情'" :description="currentRole?.code" @close="closeRoleDetail">
       <template v-if="currentRole">
         <div class="drawer-status-line">
-          <span class="status-badge" :class="currentRole.builtIn === 1 ? 'warning' : ''">{{ currentRole.builtIn === 1 ? '内置角色' : '自定义角色' }}</span>
+          <span class="status-badge" :class="currentRole.builtIn === 1 || delegatedRole ? 'warning' : ''">{{ delegatedRole ? '受委托角色' : (currentRole.builtIn === 1 ? '内置角色' : '自定义角色') }}</span>
           <span v-if="currentRole.builtIn === 1">内置角色不能删除</span>
         </div>
+        <section v-if="delegatedRole" class="assignment-section" aria-label="委托信息">
+          <dl class="open-role-details">
+            <div><dt>委托编号</dt><dd>{{ delegatedRole.openRoleId }}</dd></div>
+            <div><dt>固定应用</dt><dd>{{ applicationName(delegatedRole.applicationId) || delegatedRole.applicationId }}</dd></div>
+            <div><dt>组织根部门</dt><dd>{{ delegatedRole.rootDepartmentId }}</dd></div>
+            <div><dt>版本</dt><dd>{{ delegatedRole.revision }}</dd></div>
+          </dl>
+        </section>
         <form class="drawer-form" @submit.prevent="submitRoleEdit">
           <label><span>角色名称</span><input v-model="editForm.name" required></label>
           <label><span>角色说明</span><textarea v-model="editForm.description"></textarea></label>
-          <button class="button-primary" type="submit" :disabled="submitting">{{ submitting ? '正在保存…' : '保存基本信息' }}</button>
+          <button class="button-primary" type="submit" :disabled="roleWritePending || !roleVersionReady">{{ submitting ? '正在保存…' : '保存基本信息' }}</button>
         </form>
         <section class="assignment-section">
           <header>
@@ -1029,7 +1176,7 @@ onMounted(() => {
               <h3>角色成员 <span>{{ roleMembers.length }}</span></h3>
               <p>当前持有该角色的用户。</p>
             </div>
-            <button class="button-secondary" type="button" @click="openMemberPicker">添加成员</button>
+            <button v-if="!delegatedRole" class="button-secondary" type="button" @click="openMemberPicker">添加成员</button>
           </header>
           <div v-if="roleMembers.length" class="assignment-list">
             <article v-for="user in roleMembers" :key="user.subjectId">
@@ -1039,7 +1186,7 @@ onMounted(() => {
               </div>
               <div class="drawer-status-line">
                 <span class="status-badge" :class="user.status === 1 ? '' : 'muted'">{{ user.status === 1 ? '启用' : '禁用' }}</span>
-                <button type="button" class="table-action danger" @click="requestRevokeMember(user)">移除</button>
+                <button v-if="!delegatedRole" type="button" class="table-action danger" @click="requestRevokeMember(user)">移除</button>
               </div>
             </article>
           </div>
@@ -1114,7 +1261,7 @@ onMounted(() => {
           </div>
           <p v-else class="assignment-empty">尚无部门挂载该角色。</p>
         </section>
-        <section class="assignment-section">
+        <section v-if="!delegatedRole" class="assignment-section">
           <header>
             <div>
               <h3>IAM 管理台权限 <span>{{ assignedPermissions.length }}</span></h3>
@@ -1195,12 +1342,13 @@ onMounted(() => {
           </div>
 
           <div class="picker-group">
-            <p class="picker-group-title">可信应用（可多选，每个应用单独配置）</p>
+            <p class="picker-group-title">{{ delegatedRole ? '固定可信应用' : '可信应用（可多选，每个应用单独配置）' }}</p>
             <div v-if="ruleApplications.length" class="picker-options">
               <label v-for="application in ruleApplications" :key="application.id">
                 <input
                   type="checkbox"
                   :checked="ruleEditors.has(application.id)"
+                  :disabled="Boolean(delegatedRole) || roleWritePending"
                   @change="toggleRuleApplication(application.id)"
                 >
                 <span>{{ application.applicationName }}（{{ application.applicationCode }}）</span>
@@ -1306,8 +1454,8 @@ onMounted(() => {
               <p v-else class="picker-empty">清单未申报 DATA 资源，无法配置数据授权。</p>
             </div>
             <footer class="drawer-actions">
-              <button v-if="activeEditor.ruleExists" class="button-secondary" type="button" :disabled="ruleSaving || activeEditor.pending" @click="clearRule">删除此应用规则</button>
-              <button class="button-primary" type="submit" :disabled="ruleSaving || activeEditor.pending || !activeEditor.manifest">
+              <button v-if="activeEditor.ruleExists" class="button-secondary" type="button" :disabled="roleWritePending || !roleVersionReady || activeEditor.pending" @click="clearRule">删除此应用规则</button>
+              <button class="button-primary" type="submit" :disabled="roleWritePending || !roleVersionReady || activeEditor.pending || !activeEditor.manifest">
                 {{ ruleSaving ? '正在保存…' : `保存规则${selectedRuleAppIds.length > 1 ? `（${selectedRuleAppIds.length} 个应用）` : ''}` }}
               </button>
             </footer>

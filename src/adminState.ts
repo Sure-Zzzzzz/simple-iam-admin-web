@@ -23,11 +23,12 @@ export const adminState = reactive({
 
 export function createRuntimeRequest(request: <T>(url: string, init?: RequestInit) => Promise<T>): NonNullable<RuntimeContext['request']> {
   return {
-    request<TResponse>({ method, path, body, signal }: Parameters<RuntimeRequest['request']>[0]) {
+    request<TResponse>({ method, path, body, signal, headers }: Parameters<RuntimeRequest['request']>[0]) {
       return request<TResponse>(path, {
         ...(method === 'GET' ? {} : { method }),
         ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
-        ...(signal ? { signal } : {})
+        ...(signal ? { signal } : {}),
+        ...(headers ? { headers } : {})
       });
     }
   };
@@ -44,12 +45,14 @@ export function applyAdminBridge(bridge?: Partial<AdminBridge>) {
 function createAdminRequestBridge(runtimeRequest: NonNullable<RuntimeContext['request']>) {
   return <T>(url: string, init: RequestInit = {}) => {
     const method = init.method || 'GET';
-    return runtimeRequest.request<T>({
+    const input: Parameters<RuntimeRequest['request']>[0] = {
       method,
       path: url,
       ...(init.body === undefined ? {} : { body: typeof init.body === 'string' ? JSON.parse(init.body) : init.body }),
-      ...(init.signal ? { signal: init.signal } : {})
-    });
+      ...(init.signal ? { signal: init.signal } : {}),
+      ...(init.headers ? { headers: Object.fromEntries(new Headers(init.headers).entries()) } : {})
+    };
+    return runtimeRequest.request<T>(input);
   };
 }
 

@@ -680,6 +680,17 @@ describe('UsersView', () => {
     expect(wrapper.text()).toContain('已删除用户 disabled-user');
   });
 
+  it('用户个人角色候选不提供受委托角色', async () => {
+    const delegated = { ...roles[1], id: 20, code: 'open_role', openRoleBinding: { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' } };
+    const request = createRequestMock({ ...baseHandlers, 'GET /iam/admin/roles': [...roles, delegated] });
+    const wrapper = await mountView(request);
+    await wrapper.get('tbody button').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('+ open_role');
+    expect(wrapper.text()).toContain('+ iam_admin');
+    wrapper.unmount();
+  });
+
   it('删除被服务端拒绝（如最后一个管理员）时应展示错误且不发成功提示', async () => {
     const request = createRequestMock({
       ...baseHandlers,

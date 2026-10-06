@@ -229,6 +229,9 @@
 }
 
 .responsive-table table { min-width: 680px; }
+.open-role-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.open-role-details dt { color: var(--iam-muted); }
+.open-role-details dd { margin: 4px 0 0; overflow-wrap: anywhere; }
 
 .responsive-table table.user-table { min-width: 1456px; }
 

@@ -191,7 +191,7 @@ const loginProviderOptions = computed<FormSelectOption[]>(() =>
 
 const assignableRoles = computed(() => {
   const assigned = new Set(selectedUserRoles.value.map(role => role.id));
-  return roles.value.filter(role => !assigned.has(role.id));
+  return roles.value.filter(role => !role.openRoleBinding && !assigned.has(role.id));
 });
 
 const activeAuthorizations = computed(() =>
@@ -485,7 +485,7 @@ async function submitResetPassword() {
 }
 
 async function assignRole(roleId: number) {
-  if (!selectedUser.value) {
+  if (!selectedUser.value || !assignableRoles.value.some(role => role.id === roleId)) {
     return;
   }
   message.value = '';
@@ -499,7 +499,7 @@ async function assignRole(roleId: number) {
 }
 
 async function revokeRole(roleId: number) {
-  if (!selectedUser.value) {
+  if (!selectedUser.value || selectedUserRoles.value.find(role => role.id === roleId)?.openRoleBinding) {
     return;
   }
   message.value = '';
@@ -813,9 +813,10 @@ watch(() => route.query, () => {
         </form>
         <h3>已分配角色</h3>
         <div class="tag-list">
-          <button v-for="role in selectedUserRoles" :key="role.id" type="button" @click="revokeRole(role.id)">
-            {{ role.code }} ×
-          </button>
+          <template v-for="role in selectedUserRoles" :key="role.id">
+            <span v-if="role.openRoleBinding">{{ role.code }} · 受委托角色</span>
+            <button v-else type="button" @click="revokeRole(role.id)">{{ role.code }} ×</button>
+          </template>
           <span v-if="selectedUserRoles.length === 0">暂无角色</span>
         </div>
         <template v-if="canReadRoleCatalog">

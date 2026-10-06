@@ -683,6 +683,242 @@ describe('RolesView', () => {
     expect(document.body.textContent).toContain('已保存 2 个应用的授权规则');
   });
 
+  it('受委托角色回读版本后固定应用，隐藏个人分配和全局权限，规则成功后更新版本', async () => {
+    let revision = 5;
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const role = { ...roles[0], openRoleBinding: binding };
+    const rule = { roleId: 1, applicationId: 7, pagePermissions: [], apiPermissions: [], dataGrantTemplate: null, createdAt: '', updatedAt: '' };
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role] });
+      if (url === '/iam/admin/roles/1') return Promise.resolve({ ...role, openRoleBinding: { ...binding, revision } });
+      if (url === '/iam/admin/permissions' || url === '/iam/admin/roles/1/permissions' || url === '/iam/admin/roles/1/departments') return Promise.resolve([]);
+      if (url.includes('/users/page?')) return Promise.resolve(emptyMemberPage);
+      if (url.includes('/trusted-applications/page?')) return Promise.resolve({ ...trustedAppsPage, content: [...trustedApps, { ...trustedApps[0], id: 8, applicationName: '另一个应用' }] });
+      if (url === '/iam/admin/trusted-applications/7/permission-manifest') return Promise.resolve(defaultSelectManifest);
+      if (url === '/iam/admin/roles/1/authorization-rules/7') {
+        if (init.method === 'PUT' || init.method === 'DELETE') revision++;
+        return Promise.resolve(init.method === 'DELETE' ? undefined : rule);
+      }
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    bridgeWith(request);
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+    await wrapper.get('tbody button').trigger('click');
+    await flushPromises();
+    expect(document.body.textContent).toContain('受委托角色');
+    expect(document.body.textContent).toContain('组织根部门');
+    expect(document.body.textContent).not.toContain('添加成员');
+    expect(document.body.textContent).not.toContain('IAM 管理台权限');
+    expect(document.body.textContent).not.toContain('另一个应用');
+    const save = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.startsWith('保存规则'))!;
+    save.click();
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith('/iam/admin/roles/1/authorization-rules/7', {
+      method: 'PUT', headers: { 'if-match': '"open-role:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:5"' },
+      body: JSON.stringify({ pagePermissions: [], apiPermissions: [], dataGrantTemplate: null })
+    });
+    const clear = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '删除此应用规则')!;
+    clear.click();
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith('/iam/admin/roles/1/authorization-rules/7', {
+      method: 'DELETE', headers: { 'if-match': '"open-role:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:6"' }
+    });
+    expect(request.mock.calls.filter(([url]) => String(url).includes('/authorization-rules/8'))).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it.each([412, 428])('受委托角色改名遇到 %s 时刷新并要求重新确认，不自动重复写', async status => {
+    let revision = 5;
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const role = { ...roles[0], openRoleBinding: binding };
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role] });
+      if (url === '/iam/admin/roles/1') {
+        if (init.method === 'PUT') {
+          revision = 6;
+          return Promise.reject(Object.assign(new Error('条件不满足'), { httpStatus: status }));
+        }
+        return Promise.resolve({ ...role, name: revision === 6 ? '最新名称' : role.name, openRoleBinding: { ...binding, revision } });
+      }
+      if (url === '/iam/admin/permissions' || url === '/iam/admin/roles/1/permissions' || url === '/iam/admin/roles/1/departments') return Promise.resolve([]);
+      if (url.includes('/users/page?')) return Promise.resolve(emptyMemberPage);
+      if (url.includes('/trusted-applications/page?')) return Promise.resolve(trustedAppsPage);
+      if (url.includes('/permission-manifest')) return Promise.resolve(defaultSelectManifest);
+      if (url.includes('/authorization-rules/')) return Promise.resolve(null);
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    bridgeWith(request);
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+    await wrapper.get('tbody button').trigger('click');
+    await flushPromises();
+    const save = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '保存基本信息')!;
+    save.click();
+    await flushPromises();
+    const writes = request.mock.calls.filter(([, init]) => (init as RequestInit).method === 'PUT');
+    expect(writes).toHaveLength(1);
+    expect(writes[0][1]).toMatchObject({ headers: { 'if-match': '"open-role:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:5"' } });
+    expect(document.body.textContent).toContain('请核对最新内容后重新确认操作');
+    expect(document.body.textContent).toContain('最新名称');
+    wrapper.unmount();
+  });
+
+  it('受委托角色冲突后详情回读失败，不允许继续使用旧版本提交', async () => {
+    let conflict = false;
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const role = { ...roles[0], openRoleBinding: binding };
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role] });
+      if (url === '/iam/admin/roles/1') {
+        if (init.method === 'PUT') { conflict = true; return Promise.reject(Object.assign(new Error('条件不满足'), { httpStatus: 412 })); }
+        return conflict ? Promise.reject(new Error('详情暂不可用')) : Promise.resolve(role);
+      }
+      if (url === '/iam/admin/permissions' || url === '/iam/admin/roles/1/permissions' || url === '/iam/admin/roles/1/departments') return Promise.resolve([]);
+      if (url.includes('/users/page?')) return Promise.resolve(emptyMemberPage);
+      if (url.includes('/trusted-applications/page?')) return Promise.resolve(trustedAppsPage);
+      if (url.includes('/permission-manifest')) return Promise.resolve(defaultSelectManifest);
+      if (url.includes('/authorization-rules/')) return Promise.resolve(null);
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    bridgeWith(request);
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+    await wrapper.get('tbody button').trigger('click');
+    await flushPromises();
+    const save = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '保存基本信息')!;
+    save.click();
+    await flushPromises();
+    expect(document.body.textContent).toContain('重新加载角色失败：详情暂不可用');
+    expect(save.disabled).toBe(true);
+    save.click();
+    await flushPromises();
+    expect(request.mock.calls.filter(([, init]) => (init as RequestInit).method === 'PUT')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it('受委托角色详情 A→B→A 的旧回读不能覆盖最新名称与版本', async () => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const role = { ...roles[0], openRoleBinding: binding };
+    let resolveOld!: (value: typeof role) => void;
+    const oldDetail = new Promise<typeof role>(resolve => { resolveOld = resolve; });
+    let detailReads = 0;
+    const request = vi.fn().mockImplementation((url: string) => {
+      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role, roles[1]] });
+      if (url === '/iam/admin/roles/1') return ++detailReads === 1 ? oldDetail : Promise.resolve({ ...role, name: '当前名称', openRoleBinding: { ...binding, revision: 6 } });
+      if (url.endsWith('/permissions') || url.endsWith('/departments')) return Promise.resolve([]);
+      if (url.includes('/users/page?')) return Promise.resolve(emptyMemberPage);
+      if (url.includes('/trusted-applications/page?')) return Promise.resolve(trustedAppsPage);
+      if (url.includes('/permission-manifest')) return Promise.resolve(defaultSelectManifest);
+      if (url.includes('/authorization-rules/')) return Promise.resolve(null);
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    bridgeWith(request);
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+    const buttons = wrapper.findAll('tbody .table-primary-action');
+    await buttons[0].trigger('click');
+    await buttons[1].trigger('click');
+    await flushPromises();
+    await buttons[0].trigger('click');
+    await flushPromises();
+    resolveOld({ ...role, name: '过期名称' });
+    await flushPromises();
+    expect(document.querySelector('.entity-drawer')?.textContent).toContain('当前名称');
+    expect(document.querySelector('.entity-drawer')?.textContent).not.toContain('过期名称');
+    expect(document.querySelector('.open-role-details')?.textContent).toContain('6');
+    wrapper.unmount();
+  });
+
+  it('A 冲突回读期间切到 B 并提交，A 旧错误和 finally 不改变 B 的提交状态', async () => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const role = { ...roles[0], openRoleBinding: binding };
+    let rejectOldRefresh!: (error: Error) => void;
+    const oldRefresh = new Promise<unknown>((_, reject) => { rejectOldRefresh = reject; });
+    let resolveNewWrite!: (value: typeof roles[1]) => void;
+    const newWrite = new Promise<typeof roles[1]>(resolve => { resolveNewWrite = resolve; });
+    let reads = 0;
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role, roles[1]] });
+      if (url === '/iam/admin/roles/1') {
+        if (init.method === 'PUT') return Promise.reject(Object.assign(new Error('条件不满足'), { httpStatus: 412 }));
+        return ++reads === 1 ? Promise.resolve(role) : oldRefresh;
+      }
+      if (url === '/iam/admin/roles/2' && init.method === 'PUT') return newWrite;
+      if (url.endsWith('/permissions') || url.endsWith('/departments')) return Promise.resolve([]);
+      if (url.includes('/users/page?')) return Promise.resolve(emptyMemberPage);
+      if (url.includes('/trusted-applications/page?')) return Promise.resolve(trustedAppsPage);
+      if (url.includes('/permission-manifest')) return Promise.resolve(defaultSelectManifest);
+      if (url.includes('/authorization-rules/')) return Promise.resolve(null);
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    bridgeWith(request);
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+    await wrapper.get('tbody button').trigger('click');
+    await flushPromises();
+    const actions = wrapper.vm as unknown as {
+      openRoleDetail(role: typeof roles[1]): Promise<boolean>;
+      submitRoleEdit(): Promise<void>;
+    };
+    const oldWrite = actions.submitRoleEdit();
+    await flushPromises();
+    await actions.openRoleDetail(roles[1]);
+    await flushPromises();
+    const currentWrite = actions.submitRoleEdit();
+    await flushPromises();
+    rejectOldRefresh(new Error('A 旧回读错误'));
+    await oldWrite;
+    await flushPromises();
+    expect(document.body.textContent).not.toContain('A 旧回读错误');
+    const currentSave = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '正在保存…')!;
+    expect(currentSave.disabled).toBe(true);
+    expect(document.querySelector('.entity-drawer h2')?.textContent).toBe('IAM 管理员');
+    resolveNewWrite(roles[1]);
+    await currentWrite;
+    await flushPromises();
+    expect(document.body.textContent).toContain('角色已更新');
+    wrapper.unmount();
+  });
+
+  it.each(['成功', '失败'])('受委托角色删除确认回读%s，只在详情成功展示后允许删除', async outcome => {
+    const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
+    const role = { ...roles[0], openRoleBinding: binding };
+    let deleted = false;
+    let resolveDetail!: (value: typeof role) => void;
+    let rejectDetail!: (error: Error) => void;
+    const detail = new Promise<typeof role>((resolve, reject) => { resolveDetail = resolve; rejectDetail = reject; });
+    const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: deleted ? [] : [role] });
+      if (url === '/iam/admin/permissions') return Promise.resolve([]);
+      if (url === '/iam/admin/roles/1') {
+        if (init.method === 'DELETE') { deleted = true; return Promise.resolve(undefined); }
+        return detail;
+      }
+      if (url.includes('/users/page?')) return Promise.resolve(emptyMemberPage);
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    bridgeWith(request);
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+    await wrapper.findAll('tbody button').find(button => button.text() === '删除')!.trigger('click');
+    expect(document.querySelector('.confirm-dialog')).toBeNull();
+    if (outcome === '成功') resolveDetail({ ...role, name: '最新角色名称', openRoleBinding: { ...binding, revision: 5 } });
+    else rejectDetail(new Error('详情不可用'));
+    await flushPromises();
+    if (outcome === '成功') {
+      expect(document.querySelector('.confirm-dialog')?.textContent).toContain('最新角色名称');
+      (document.querySelector('.confirm-dialog .button-danger') as HTMLButtonElement).click();
+      await flushPromises();
+      expect(request).toHaveBeenCalledWith('/iam/admin/roles/1', { method: 'DELETE', headers: { 'if-match': '"open-role:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:5"' } });
+    } else {
+      expect(document.querySelector('.confirm-dialog')).toBeNull();
+      expect(document.body.textContent).toContain('读取删除确认信息失败：详情不可用');
+      expect(request.mock.calls.filter(([, init]) => (init as RequestInit).method === 'DELETE')).toHaveLength(0);
+    }
+    wrapper.unmount();
+  });
+
   it('角色详情应展示继承来源部门且为只读', async () => {
     const departments = [
       { id: 10, code: 'headquarters', name: '总部', parentId: null, parentName: null, status: 1, sortOrder: 0, createdAt: '', updatedAt: '' },

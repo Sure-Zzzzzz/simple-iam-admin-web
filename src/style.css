@@ -253,7 +253,7 @@
 .table-primary-action strong { font-size: 14px; }
 .table-primary-action span { color: var(--iam-muted); font-size: 12px; }
 .table-actions { text-align: right !important; white-space: nowrap; }
-.table-actions .table-action + .table-action { margin-left: 6px; }
+.table-action + .table-action { margin-left: 6px; }
 .table-empty { color: var(--iam-muted); padding: 28px 0; text-align: center; }
 
 .platform-admin-note {

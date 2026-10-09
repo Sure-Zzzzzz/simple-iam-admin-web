@@ -12,7 +12,11 @@ const roles = [
 ];
 const rolePage = {
   content: roles, totalElements: roles.length, totalPages: 1,
-  page: 1, size: 100, numberOfElements: roles.length, first: true, last: true, empty: false
+  page: 1, size: 10, numberOfElements: roles.length, first: true, last: true, empty: false
+};
+const emptyRolePage = {
+  content: [], totalElements: 0, totalPages: 0,
+  page: 1, size: 10, numberOfElements: 0, first: true, last: true, empty: true
 };
 const permissions = [
   { id: 10, code: 'iam:user:page', name: '用户管理页面', description: '', type: 'page', builtIn: 1 },
@@ -76,7 +80,7 @@ describe('RolesView', () => {
     const wrapper = mount(RolesView, { attachTo: document.body });
     await flushPromises();
 
-    expect(request).toHaveBeenNthCalledWith(1, '/iam/admin/roles/page?page=1&size=100', {});
+    expect(request).toHaveBeenNthCalledWith(1, '/iam/admin/roles/page?page=1&size=10', {});
     expect(request).toHaveBeenNthCalledWith(2, '/iam/admin/permissions', {});
 
     await wrapper.get('tbody button').trigger('click');
@@ -88,6 +92,21 @@ describe('RolesView', () => {
     expect(document.body.textContent).toContain('角色成员');
     expect(document.body.textContent).toContain('运营甲');
     expect(document.body.textContent).toContain('运营部');
+  });
+
+  it('空页时表格渲染契约占位行并横跨全部列', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(emptyRolePage)
+      .mockResolvedValueOnce(permissions);
+    bridgeWith(request);
+
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+
+    const placeholder = wrapper.get('tbody td.data-table-placeholder');
+    expect(placeholder.text()).toBe('没有找到匹配的角色。');
+    expect(placeholder.attributes('colspan')).toBe('4');
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1);
   });
 
   // 打开角色抽屉会默认选中第一个可信应用，manifest+rule 两个请求固定占用第 7/8 位
@@ -111,6 +130,49 @@ describe('RolesView', () => {
     expect(label).toBeTruthy();
     return label!;
   }
+
+  it('角色列表分页：搜索词回车透传服务端检索并回到第一页，翻页与换页大小走查询参数', async () => {
+    const pageTwo = {
+      content: [roles[roles.length - 1]], totalElements: 24, totalPages: 3,
+      page: 2, size: 10, numberOfElements: 1, first: false, last: false, empty: false
+    };
+    const keywordPageOne = {
+      content: roles, totalElements: 24, totalPages: 3,
+      page: 1, size: 10, numberOfElements: roles.length, first: true, last: false, empty: false
+    };
+    const request = vi.fn()
+      .mockResolvedValueOnce(rolePage)
+      .mockResolvedValueOnce(permissions)
+      .mockResolvedValueOnce(keywordPageOne)
+      .mockResolvedValueOnce(permissions)
+      .mockResolvedValueOnce(pageTwo)
+      .mockResolvedValueOnce(permissions)
+      .mockResolvedValueOnce(keywordPageOne)
+      .mockResolvedValueOnce(permissions);
+    bridgeWith(request);
+
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+    expect(request).toHaveBeenNthCalledWith(1, '/iam/admin/roles/page?page=1&size=10', {});
+
+    // 搜索词回车：透传 keyword 并回到第一页
+    const search = wrapper.get('input[type="search"]');
+    await search.setValue('运营');
+    await search.trigger('keyup', { key: 'Enter' });
+    await flushPromises();
+    expect(request).toHaveBeenNthCalledWith(3, '/iam/admin/roles/page?page=1&size=10&keyword=%E8%BF%90%E8%90%A5', {});
+
+    // 翻页：Pagination 组件 emit update:current 走页码进查询参数
+    const pagination = wrapper.findComponent({ name: 'Pagination' });
+    pagination.vm.$emit('update:current', 2);
+    await flushPromises();
+    expect(request).toHaveBeenNthCalledWith(5, '/iam/admin/roles/page?page=2&size=10&keyword=%E8%BF%90%E8%90%A5', {});
+
+    // 换页大小：Pagination 组件 emit update:pageSize 走 size 进参数并回第一页
+    pagination.vm.$emit('update:pageSize', 20);
+    await flushPromises();
+    expect(request).toHaveBeenNthCalledWith(7, '/iam/admin/roles/page?page=1&size=20&keyword=%E8%BF%90%E8%90%A5', {});
+  });
 
   it('权限按模块分组：page+api 成对模块合并一行，不成对模块单独成行不硬凑', async () => {
     const request = vi.fn()
@@ -689,7 +751,7 @@ describe('RolesView', () => {
     const role = { ...roles[0], openRoleBinding: binding };
     const rule = { roleId: 1, applicationId: 7, pagePermissions: [], apiPermissions: [], dataGrantTemplate: null, createdAt: '', updatedAt: '' };
     const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
-      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role] });
+      if (url === '/iam/admin/roles/page?page=1&size=10') return Promise.resolve({ ...rolePage, content: [role] });
       if (url === '/iam/admin/roles/1') return Promise.resolve({ ...role, openRoleBinding: { ...binding, revision } });
       if (url === '/iam/admin/permissions' || url === '/iam/admin/roles/1/permissions' || url === '/iam/admin/roles/1/departments') return Promise.resolve([]);
       if (url.includes('/users/page?')) return Promise.resolve(emptyMemberPage);
@@ -733,7 +795,7 @@ describe('RolesView', () => {
     const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
     const role = { ...roles[0], openRoleBinding: binding };
     const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
-      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role] });
+      if (url === '/iam/admin/roles/page?page=1&size=10') return Promise.resolve({ ...rolePage, content: [role] });
       if (url === '/iam/admin/roles/1') {
         if (init.method === 'PUT') {
           revision = 6;
@@ -769,7 +831,7 @@ describe('RolesView', () => {
     const binding = { openRoleId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', applicationId: 7, rootDepartmentId: 10, revision: 4, state: 'ACTIVE' as const };
     const role = { ...roles[0], openRoleBinding: binding };
     const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
-      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role] });
+      if (url === '/iam/admin/roles/page?page=1&size=10') return Promise.resolve({ ...rolePage, content: [role] });
       if (url === '/iam/admin/roles/1') {
         if (init.method === 'PUT') { conflict = true; return Promise.reject(Object.assign(new Error('条件不满足'), { httpStatus: 412 })); }
         return conflict ? Promise.reject(new Error('详情暂不可用')) : Promise.resolve(role);
@@ -804,7 +866,7 @@ describe('RolesView', () => {
     const oldDetail = new Promise<typeof role>(resolve => { resolveOld = resolve; });
     let detailReads = 0;
     const request = vi.fn().mockImplementation((url: string) => {
-      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role, roles[1]] });
+      if (url === '/iam/admin/roles/page?page=1&size=10') return Promise.resolve({ ...rolePage, content: [role, roles[1]] });
       if (url === '/iam/admin/roles/1') return ++detailReads === 1 ? oldDetail : Promise.resolve({ ...role, name: '当前名称', openRoleBinding: { ...binding, revision: 6 } });
       if (url.endsWith('/permissions') || url.endsWith('/departments')) return Promise.resolve([]);
       if (url.includes('/users/page?')) return Promise.resolve(emptyMemberPage);
@@ -839,7 +901,7 @@ describe('RolesView', () => {
     const newWrite = new Promise<typeof roles[1]>(resolve => { resolveNewWrite = resolve; });
     let reads = 0;
     const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
-      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: [role, roles[1]] });
+      if (url === '/iam/admin/roles/page?page=1&size=10') return Promise.resolve({ ...rolePage, content: [role, roles[1]] });
       if (url === '/iam/admin/roles/1') {
         if (init.method === 'PUT') return Promise.reject(Object.assign(new Error('条件不满足'), { httpStatus: 412 }));
         return ++reads === 1 ? Promise.resolve(role) : oldRefresh;
@@ -889,7 +951,7 @@ describe('RolesView', () => {
     let rejectDetail!: (error: Error) => void;
     const detail = new Promise<typeof role>((resolve, reject) => { resolveDetail = resolve; rejectDetail = reject; });
     const request = vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
-      if (url === '/iam/admin/roles/page?page=1&size=100') return Promise.resolve({ ...rolePage, content: deleted ? [] : [role] });
+      if (url === '/iam/admin/roles/page?page=1&size=10') return Promise.resolve({ ...rolePage, content: deleted ? [] : [role] });
       if (url === '/iam/admin/permissions') return Promise.resolve([]);
       if (url === '/iam/admin/roles/1') {
         if (init.method === 'DELETE') { deleted = true; return Promise.resolve(undefined); }

@@ -3,7 +3,9 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import EntityDrawer from '../components/EntityDrawer.vue';
+import DataTable, { type DataTableColumn } from '@sure-zzzzzz/simple-iam-theme-contract/DataTable';
 import FormSelect, { type FormSelectOption } from '@sure-zzzzzz/simple-iam-theme-contract/FormSelect';
+import Pagination from '@sure-zzzzzz/simple-iam-theme-contract/Pagination';
 import {
   assignRolePermission,
   assignUserRole,
@@ -36,11 +38,19 @@ import {
   type IamRole,
   type IamUser,
   type IamUserGroup,
+  type PageQuery,
   type RoleAuthorizationRule,
   type TrustedApplication
 } from '../api/iamAuth';
 
 const roles = ref<IamRole[]>([]);
+
+const roleColumns: DataTableColumn[] = [
+  { key: 'name', label: '角色' },
+  { key: 'description', label: '说明' },
+  { key: 'type', label: '类型' },
+  { key: 'actions', label: '操作', align: 'right', nowrap: true }
+];
 const allPermissions = ref<IamPermission[]>([]);
 const currentRole = ref<IamRole | null>(null);
 const assignedPermissions = ref<IamPermission[]>([]);
@@ -50,6 +60,11 @@ const message = ref('');
 const errorMessage = ref('');
 const roleKeyword = ref('');
 const permissionKeyword = ref('');
+// 角色列表服务端分页状态：与用户页同款（page/size/总数三件套 + 翻页守卫）
+const rolePageSize = ref(10);
+const roleCurrentPage = ref(1);
+const roleTotalPages = ref(1);
+const roleTotalElements = ref(0);
 const createDrawerOpen = ref(false);
 const detailDrawerOpen = ref(false);
 const deleteTarget = ref<IamRole | null>(null);
@@ -474,14 +489,32 @@ const deleteDescription = computed(() => {
   return `将删除“${target.name}”及其当前权限分配。该角色的 ${count} 名成员将在下次请求时失去对应权限，无需重新登录。此操作无法撤销。`;
 });
 
-const filteredRoles = computed(() => {
-  const keyword = roleKeyword.value.trim().toLowerCase();
-  if (!keyword) {
-    return roles.value;
+// 角色列表改服务端检索后本地过滤退场：keyword 直接进查询参数，列表原样展示当前页
+const filteredRoles = computed(() => roles.value);
+
+// 翻页守卫：与用户页同款（越界/原地跳转忽略）
+function changeRolePage(page: number) {
+  if (page < 1 || page > roleTotalPages.value || page === roleCurrentPage.value) {
+    return;
   }
-  return roles.value.filter(role =>
-    [role.code, role.name, role.description || ''].some(value => value.toLowerCase().includes(keyword)));
-});
+  roleCurrentPage.value = page;
+  void loadRoles();
+}
+
+function changeRolePageSize(size: number) {
+  if (size < 1 || size === rolePageSize.value) {
+    return;
+  }
+  rolePageSize.value = size;
+  roleCurrentPage.value = 1;
+  void loadRoles();
+}
+
+// 搜索：回服务端检索并回到第一页
+function searchRoles() {
+  roleCurrentPage.value = 1;
+  void loadRoles();
+}
 
 // 合并开关：勾选 = 组内缺的码逐个补发；取消（含半选态点击）= 组内已绑的码逐个撤销；
 // 部分失败时列出码名，已生效的不回滚
@@ -525,12 +558,20 @@ async function togglePermissionGroup(row: PermissionGroupRow) {
 async function loadRoles(operationId?: number) {
   errorMessage.value = '';
   try {
+    const roleQuery: PageQuery = { page: roleCurrentPage.value, size: rolePageSize.value };
+    const trimmedKeyword = roleKeyword.value.trim();
+    if (trimmedKeyword) {
+      roleQuery.keyword = trimmedKeyword;
+    }
     const [rolePage, permissionList] = await Promise.all([
-      fetchRolePage({ page: 1, size: 100 }),
+      fetchRolePage(roleQuery),
       fetchPermissions()
     ]);
     if (operationId !== undefined && operationId !== roleWriteOperation) return;
     roles.value = rolePage.content;
+    roleTotalElements.value = rolePage.totalElements;
+    roleTotalPages.value = Math.max(rolePage.totalPages, 1);
+    roleCurrentPage.value = rolePage.page;
     allPermissions.value = permissionList;
     if (currentRole.value) {
       const refreshed = roles.value.find(role => role.id === currentRole.value?.id);
@@ -555,6 +596,9 @@ async function submitCreateRole() {
     Object.assign(createForm, { code: '', name: '', description: '' });
     createDrawerOpen.value = false;
     message.value = '角色创建成功';
+    // 新建角色按 createdAt 倒序必然落在第一页：回到第一页重载，保证 find 能定位到
+    roleKeyword.value = '';
+    roleCurrentPage.value = 1;
     await loadRoles();
     const target = roles.value.find(role => role.id === created.id) || created;
     await openRoleDetail(target);
@@ -1094,49 +1138,54 @@ onUnmounted(() => { roleDetailRequest++; roleWriteOperation++; deleteReadRequest
     <section class="admin-data-surface" aria-label="角色列表">
       <header class="data-toolbar">
         <div>
-          <h2>全部角色 <span>{{ filteredRoles.length }}</span></h2>
+          <h2>全部角色 <span>{{ roleTotalElements }}</span></h2>
           <p>选择一个角色以查看其权限范围和配置。</p>
         </div>
         <label class="search-field">
           <span class="sr-only">搜索角色</span>
-          <input v-model="roleKeyword" type="search" placeholder="搜索编码、名称或描述">
+          <input v-model="roleKeyword" type="search" placeholder="搜索编码、名称或描述" @keyup.enter="searchRoles">
         </label>
       </header>
-      <div class="responsive-table">
-        <table>
-          <thead>
-            <tr>
-              <th>角色</th>
-              <th>说明</th>
-              <th>类型</th>
-              <th class="table-actions">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="role in filteredRoles" :key="role.id" :class="{ selected: currentRole?.id === role.id }">
-              <td>
-                <button class="table-primary-action" type="button" :disabled="roleWritePending" @click="openRoleDetail(role)">
-                  <strong>{{ role.name }}</strong>
-                  <span>{{ role.code }}</span>
-                </button>
-              </td>
-              <td>{{ role.description || '未填写角色说明' }}</td>
-              <td>
-                <span class="status-badge" :class="role.builtIn === 1 ? 'warning' : ''">
-                  {{ role.openRoleBinding ? '受委托角色' : (role.builtIn === 1 ? '内置角色' : '自定义角色') }}
-                </span>
-              </td>
-              <td class="table-actions">
-                <button class="table-action" type="button" :disabled="roleWritePending" @click="openRoleDetail(role)">查看</button>
-                <button v-if="role.builtIn !== 1" class="table-action danger" type="button" :disabled="roleWritePending" @click="requestDeleteRole(role)">删除</button>
-              </td>
-            </tr>
-            <tr v-if="filteredRoles.length === 0">
-              <td colspan="4"><div class="table-empty">没有找到匹配的角色。</div></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        :columns="roleColumns"
+        :rows="filteredRoles"
+        row-key="id"
+        empty-text="没有找到匹配的角色。"
+        :selected-key="currentRole ? currentRole.id : null"
+      >
+        <template #cell-name="{ row }">
+          <button class="table-primary-action" type="button" :disabled="roleWritePending" @click="openRoleDetail(row)">
+            <strong>{{ row.name }}</strong>
+            <span>{{ row.code }}</span>
+          </button>
+        </template>
+        <template #cell-description="{ row }">{{ row.description || '未填写角色说明' }}</template>
+        <template #cell-type="{ row }">
+          <span class="status-badge" :class="row.builtIn === 1 ? 'warning' : ''">
+            {{ row.openRoleBinding ? '受委托角色' : (row.builtIn === 1 ? '内置角色' : '自定义角色') }}
+          </span>
+        </template>
+        <template #cell-actions="{ row }">
+          <button class="table-action" type="button" :disabled="roleWritePending" @click="openRoleDetail(row)">查看</button>
+          <button
+            v-if="row.builtIn !== 1"
+            class="table-action danger"
+            type="button"
+            :disabled="roleWritePending"
+            @click="requestDeleteRole(row)"
+          >
+            删除
+          </button>
+        </template>
+      </DataTable>
+      <Pagination
+        v-if="roleTotalElements > 0"
+        :current="roleCurrentPage"
+        :total="roleTotalElements"
+        :page-size="rolePageSize"
+        @update:current="changeRolePage"
+        @update:page-size="changeRolePageSize"
+      />
     </section>
 
     <EntityDrawer :open="createDrawerOpen" :pending="submitting" title="新建角色" description="角色编码创建后不可修改，请使用清晰稳定的职责标识。" @close="!submitting && (createDrawerOpen = false)">

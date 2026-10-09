@@ -8,6 +8,8 @@ const props = defineProps<{
   pending?: boolean;
   wide?: boolean;
   extraWide?: boolean;
+  notice?: string;
+  noticeType?: 'success' | 'error';
 }>();
 
 const emit = defineEmits<{
@@ -61,6 +63,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
           &times;
         </button>
       </header>
+      <!-- 操作反馈贴抽屉呈现：抽屉打开时页面顶横幅会被遮罩盖住，反馈必须进抽屉可见区 -->
+      <p
+        v-if="notice"
+        class="admin-message"
+        :class="noticeType === 'error' ? 'error' : 'success'"
+        :role="noticeType === 'error' ? 'alert' : 'status'"
+      >
+        {{ notice }}
+      </p>
       <div class="drawer-content">
         <slot></slot>
       </div>

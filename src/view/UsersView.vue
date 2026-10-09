@@ -681,8 +681,9 @@ watch(() => route.query, () => {
       </template>
     </AdminPageHeader>
     <input ref="importInput" class="sr-only" type="file" accept=".xlsx" @change="submitUserImport">
-    <p v-if="message" class="admin-message success" role="status">{{ message }}</p>
-    <p v-if="errorMessage" class="admin-message error" role="alert">{{ errorMessage }}</p>
+    <!-- 详情抽屉打开时操作反馈走抽屉内通知区，页面顶横幅只在非抽屉场景出现（避免双重显示） -->
+    <p v-if="message && !selectedUser" class="admin-message success" role="status">{{ message }}</p>
+    <p v-if="errorMessage && !selectedUser" class="admin-message error" role="alert">{{ errorMessage }}</p>
     <p v-if="hasRestrictedUserTools" class="assignment-empty">
       当前账号只具备部分用户管理范围；角色、组织和应用授权按独立权限控制。
     </p>
@@ -780,6 +781,8 @@ watch(() => route.query, () => {
       wide
       :title="selectedUser ? `用户详情：${selectedUser.username}` : '用户详情'"
       description="维护基础信息、密码、角色、外部身份与应用授权。"
+      :notice="errorMessage || message"
+      :notice-type="errorMessage ? 'error' : 'success'"
       @close="selectedUser = null"
     >
       <div v-if="selectedUser" class="user-detail">

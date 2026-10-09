@@ -187,6 +187,35 @@ describe('UsersView', () => {
     expect(wrapper.text()).toContain('LDAP');
   });
 
+  it('重置密码反馈应显示在详情抽屉内且页面顶不再重复渲染横幅', async () => {
+    const request = createRequestMock({
+      ...baseHandlers,
+      'PUT /iam/admin/users/sid-2/reset-password': {}
+    });
+
+    const wrapper = await mountView(request);
+    await wrapper.get('tbody button').trigger('click');
+    await flushPromises();
+
+    const drawer = wrapper.findAll('.entity-drawer')
+      .find(item => item.find('h2').text().includes('用户详情'));
+    expect(drawer).toBeTruthy();
+    await drawer!.get('input[type="password"]').setValue('NewPass@123');
+    await drawer!.findAll('button')
+      .find(btn => btn.text().includes('重置密码'))!.trigger('click');
+    await flushPromises();
+
+    expect(request).toHaveBeenCalledWith('/iam/admin/users/sid-2/reset-password',
+      expect.objectContaining({ method: 'PUT' }));
+    const inDrawerNotice = drawer!.find('.admin-message.success');
+    expect(inDrawerNotice.exists()).toBe(true);
+    expect(inDrawerNotice.text()).toBe('密码已重置');
+    const pageBanners = wrapper.findAll('p.admin-message')
+      .filter(node => !node.element.closest('.entity-drawer'));
+    // 详情抽屉打开时页面顶不得重复渲染操作反馈横幅
+    expect(pageBanners).toHaveLength(0);
+  });
+
   it('分配角色后应调用 assignUserRole 并刷新已分配列表', async () => {
     let calls = 0;
     const request = createRequestMock({

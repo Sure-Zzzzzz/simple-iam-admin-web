@@ -12,8 +12,8 @@ IAM 管理端微前端，承载用户、组织、角色、权限、可信应用�
 
 | 组件 | 版本 |
 | --- | --- |
-| IAM Admin Web | `1.2.3` |
-| IAM Server | `1.3.2`（兼容 `1.3.x` 的向后兼容 patch） |
+| IAM Admin Web | `1.2.4` |
+| IAM Server | `1.3.7`（兼容 `1.3.x` 的向后兼容 patch） |
 | IAM Contract | `1.3.0`（兼容 `1.3.x` 的向后兼容 patch） |
 | Unified Application Portal Web | `1.2.1` |
 | IAM Theme Contract | `1.0.4` |
@@ -23,6 +23,7 @@ IAM 管理端微前端，承载用户、组织、角色、权限、可信应用�
 - `1.2.1` 对齐 IAM Server `1.3.2` 的受委托角色：详情展示委托编号、固定应用、组织根与版本；六类条件写携带强 If-Match，冲突回读后由用户确认，不自动重放。
 - `1.2.2` 角色列表接入 IAM Theme Contract `1.0.4` 的 `DataTable` 契约组件并随包修复 `FormSelect` 裁剪误判；无 API 契约变化。
 - `1.2.3` 用户详情抽屉内嵌操作反馈（重置密码提示等不再被抽屉遮罩遮挡）；纯前端修复，无契约变化。
+- `1.2.4` 角色详情「继承来源部门」面板客户端分页展示（管理端点全量返回不变，纯前端，无 API 契约变化）；对齐 IAM Server `1.3.7`。
 - 后续 Admin patch 可独立发布，但必须在 release notes 中声明兼容的 Server、Contract 与 Portal 范围。
 
 权威 API 契约由 IAM Server 仓库的 `sdk/auth/iam/server/contract/` 维护；不得调用未声明接口。

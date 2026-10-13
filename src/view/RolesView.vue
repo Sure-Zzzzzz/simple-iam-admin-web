@@ -65,6 +65,16 @@ const rolePageSize = ref(10);
 const roleCurrentPage = ref(1);
 const roleTotalPages = ref(1);
 const roleTotalElements = ref(0);
+// 继承来源部门面板：admin 端点全量返回，客户端分页只读展示（切换角色时归位第一页）
+const departmentPageSize = ref(8);
+const departmentCurrentPage = ref(1);
+const departmentTotalPages = computed(() =>
+  Math.max(1, Math.ceil(roleDepartments.value.length / departmentPageSize.value))
+);
+const departmentPageItems = computed(() => {
+  const start = (departmentCurrentPage.value - 1) * departmentPageSize.value;
+  return roleDepartments.value.slice(start, start + departmentPageSize.value);
+});
 const createDrawerOpen = ref(false);
 const detailDrawerOpen = ref(false);
 const deleteTarget = ref<IamRole | null>(null);
@@ -625,6 +635,7 @@ async function openRoleDetail(role: IamRole, openDrawer = true, detailAlreadyRea
   assignedPermissions.value = [];
   roleMembers.value = [];
   roleDepartments.value = [];
+  departmentCurrentPage.value = 1;
   Object.assign(editForm, { name: role.name, description: role.description || '' });
   try {
     // 受委托角色必须先回读详情，版本与展示内容一起确认，不在提交前偷换版本。
@@ -662,6 +673,7 @@ function closeRoleDetail() {
   assignedPermissions.value = [];
   roleMembers.value = [];
   roleDepartments.value = [];
+  departmentCurrentPage.value = 1;
   permissionKeyword.value = '';
   memberPickerOpen.value = false;
   resetRuleEditor();
@@ -1301,14 +1313,22 @@ onUnmounted(() => { roleDetailRequest++; roleWriteOperation++; deleteReadRequest
             </div>
           </header>
           <div v-if="roleDepartments.length" class="assignment-list">
-            <article v-for="department in roleDepartments" :key="department.id">
+            <article v-for="department in departmentPageItems" :key="department.id">
               <div>
                 <strong>{{ department.name }}</strong>
                 <span>{{ department.code }}</span>
               </div>
             </article>
           </div>
-          <p v-else class="assignment-empty">尚无部门挂载该角色。</p>
+          <Pagination
+            v-if="departmentTotalPages > 1"
+            :current="departmentCurrentPage"
+            :total="roleDepartments.length"
+            :page-size="departmentPageSize"
+            :page-size-options="[]"
+            @update:current="departmentCurrentPage = $event"
+          />
+          <p v-else-if="!roleDepartments.length" class="assignment-empty">尚无部门挂载该角色。</p>
         </section>
         <section v-if="!delegatedRole" class="assignment-section">
           <header>

@@ -1012,4 +1012,47 @@ describe('RolesView', () => {
     expect(section!.querySelector('button')).toBeFalsy();
     expect(section!.textContent).toContain('请到组织与成员中维护部门角色挂载关系');
   });
+
+  it('继承来源部门超页容量时应客户端分页且总数保持全量', async () => {
+    const departments = Array.from({ length: 9 }, (_, index) => ({
+      id: 10 + index,
+      code: `dept-${index + 1}`,
+      name: `部门${index + 1}`,
+      parentId: null, parentName: null, status: 1, sortOrder: 0, createdAt: '', updatedAt: ''
+    }));
+    const request = vi.fn()
+      .mockResolvedValueOnce(rolePage)
+      .mockResolvedValueOnce(permissions)
+      .mockResolvedValueOnce([permissions[0]])
+      .mockResolvedValueOnce(memberPage)
+      .mockResolvedValueOnce(departments)
+      .mockResolvedValueOnce(trustedAppsPage)
+      .mockResolvedValueOnce(defaultSelectManifest)
+      .mockRejectedValueOnce(notFound404());
+    bridgeWith(request);
+
+    const wrapper = mount(RolesView, { attachTo: document.body });
+    await flushPromises();
+
+    await wrapper.get('tbody button').trigger('click');
+    await flushPromises();
+
+    const section = Array.from(document.querySelectorAll<HTMLElement>('.assignment-section'))
+      .find(section => section.querySelector('h3')?.textContent?.includes('继承来源部门'));
+    expect(section).toBeTruthy();
+    // 标题计数=全量 9；第一页只渲染 8 条
+    expect(section!.querySelector('h3')!.textContent).toContain('9');
+    expect(section!.textContent).toContain('部门1');
+    expect(section!.textContent).toContain('部门8');
+    expect(section!.textContent).not.toContain('部门9');
+    // 翻第二页后渲染余量
+    const pagination = section!.querySelector('.pagination');
+    expect(pagination).toBeTruthy();
+    const pageButtons = Array.from(pagination!.querySelectorAll('button'))
+      .filter(button => button.textContent?.trim() === '2');
+    await pageButtons[0]!.click();
+    await flushPromises();
+    expect(section!.textContent).toContain('部门9');
+    expect(section!.textContent).not.toContain('部门8');
+  });
 });
